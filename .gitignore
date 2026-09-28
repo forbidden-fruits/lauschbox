@@ -1,0 +1,10 @@
+# Lokale Konfiguration & Zugangsdaten — niemals committen
+.fritzbox.env
+.telegram.env
+.devices.env
+.TEST.md
+PLAN.md
+TECH.md
+
+# macOS
+.DS_Store

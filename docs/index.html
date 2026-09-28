@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>lauschbox — DNS-Logging für deine FRITZ!Box</title>
+  <meta name="description" content="TUI-Tool zum Loggen der DNS-Aufrufe einer FRITZ!Box — mit Gerätefilter, Sperrliste und Telegram-Benachrichtigung bei Treffern.">
+  <link rel="icon" href="img/lauschbox.jpeg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav-inner">
+      <a class="nav-brand" href="#top">
+        <img src="img/lauschbox.jpeg" alt="lauschbox Logo" class="nav-logo">
+        <span>lauschbox</span>
+      </a>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#screenshots">Screenshots</a>
+        <a href="#setup">Setup</a>
+        <a href="#usage">Nutzung</a>
+        <a class="nav-gh" href="https://github.com/forbidden-fruits/lauschbox" target="_blank" rel="noopener">GitHub ↗</a>
+      </div>
+    </div>
+  </nav>
+
+  <header class="hero" id="top">
+    <img src="img/lauschbox.jpeg" alt="lauschbox" class="hero-logo">
+    <h1>lauschbox</h1>
+    <p class="tagline">DNS-Logging für deine FRITZ!Box — mit Gerätefilter,
+      Sperrliste und Telegram-Push bei Treffern. Direkt im Terminal.</p>
+
+    <div class="install-box" role="group" aria-label="Installationsbefehl">
+      <code id="install-cmd">curl -fsSL … | sh</code>
+      <button class="copy-btn" data-copy="install-cmd" aria-label="Befehl kopieren">Kopieren</button>
+    </div>
+    <p class="install-hint">macOS &amp; Linux · Script nach <code>~/.local/bin</code> · Konfiguration &amp; <code>blocklist.txt</code> nach <code>~/.config/lauschbox</code></p>
+
+    <div class="hero-ctas">
+      <a class="btn btn-primary" href="#screenshots">Screenshots</a>
+      <a class="btn btn-ghost" href="https://github.com/forbidden-fruits/lauschbox" target="_blank" rel="noopener">Zum Repo ↗</a>
+    </div>
+  </header>
+
+  <main>
+
+    <section id="features" class="section">
+      <h2>Features</h2>
+      <div class="grid cards">
+        <div class="card"><div class="card-icon">🔌</div><h3>Fritzbox-Zugang</h3><p>IP, Benutzername, Passwort — sicher in <code>.fritzbox.env</code> (chmod 600) gespeichert.</p></div>
+        <div class="card"><div class="card-icon">📱</div><h3>Gerätefilter</h3><p>Verbundene Geräte live von der Box auflisten. Einzel- oder Mehrfachauswahl — clientseitig per MAC, deckt IPv4 &amp; IPv6 ab.</p></div>
+        <div class="card"><div class="card-icon">📡</div><h3>Live-DNS-Logging</h3><p>Zeitstempel, Gerätename, IP und Domain in Echtzeit — via Paketaufzeichnung &amp; tshark.</p></div>
+        <div class="card"><div class="card-icon">🚫</div><h3>Sperrliste</h3><p><code>blocklist.txt</code> mit Suffix-Matching. Treffer werden <span class="c-red">immer rot</span> markiert — gefiltert nur auf Wunsch.</p></div>
+        <div class="card"><div class="card-icon">✈️</div><h3>Telegram-Push</h3><p>Jeder Sperrlisten-Treffer löst sofort eine Nachricht aus — asynchron, ohne die Anzeige zu bremsen.</p></div>
+        <div class="card"><div class="card-icon">🎨</div><h3>Catppuccin Macchiato</h3><p>Durchgehendes Farbschema, fixiertes Banner, klare Statusleiste — auch auf kleinen Terminals.</p></div>
+      </div>
+    </section>
+
+    <section id="screenshots" class="section">
+      <h2>Screenshots</h2>
+
+      <h3 class="shot-title">Hauptmenü</h3>
+      <div class="term">
+        <div class="term-bar">
+          <span class="dot dot-red"></span><span class="dot dot-yellow"></span><span class="dot dot-green"></span>
+          <span class="term-title">lauschbox — Hauptmenü</span>
+        </div>
+        <pre class="term-body"><span class="c-mauve"> _                      _     _
+| | __ _ _   _ ___  ___| |__ | |__   _____  __
+| |/ _` | | | / __|/ __| '_ \| '_ \ / _ \ \/ /
+| | (_| | |_| \__ \ (__| | | | |_) | (_) &gt;  &lt;
+|_|\__,_|\__,_|___/\___|_| |_|_.__/ \___/_/\_\
+</span>
+  Fritzbox: <span class="c-green">konfiguriert ✅</span>   Telegram: <span class="c-green">konfiguriert ✅</span>
+
+  <span class="c-mauve">[1]</span> <span class="c-text">🔌 Verbindung Fritzbox</span>
+  <span class="c-mauve">[2]</span> <span class="c-text">✈️  Verbindung Telegram</span>
+  <span class="c-mauve">[3]</span> <span class="c-text">📱 Gerätefilter</span>
+  <span class="c-mauve">[4]</span> <span class="c-text">📡 DNS Logging</span>
+  <span class="c-mauve">[5]</span> <span class="c-text">🚫 Sperrliste anzeigen</span>
+  <span class="c-mauve">[6]</span> <span class="c-text">👋 Ende</span>
+
+  <span class="c-dim">Auswahl [1-6] + Enter:</span> </pre>
+      </div>
+
+      <h3 class="shot-title">DNS-Logging</h3>
+      <div class="term">
+        <div class="term-bar">
+          <span class="dot dot-red"></span><span class="dot dot-yellow"></span><span class="dot dot-green"></span>
+          <span class="term-title">lauschbox — DNS Logging</span>
+        </div>
+        <pre class="term-body" id="logview" data-reveal><span class="c-mauve"> _                      _     _
+| | __ _ _   _ ___  ___| |__ | |__   _____  __
+| |/ _` | | | / __|/ __| '_ \| '_ \ / _ \ \/ /
+| | (_| | |_| \__ \ (__| | | | |_) | (_) &gt;  &lt;
+|_|\__,_|\__,_|___/\___|_| |_|_.__/ \___/_/\_\
+</span>
+<span class="line"><span class="c-dim">16:58:19</span> <span class="c-sky">smarthome</span> <span class="c-blue">192.168.179.100</span> <span class="c-text">eu-west-1.amazonaws.com</span></span>
+<span class="line"><span class="c-dim">16:58:21</span> <span class="c-sky">iPad</span>      <span class="c-blue">192.168.179.126</span> <span class="c-text">iPad.local</span></span>
+<span class="line"><span class="c-dim">16:58:24</span> <span class="c-sky">Mac</span>       <span class="c-blue">192.168.179.129</span> <span class="c-red">heise.de</span></span>
+<span class="line"><span class="c-dim">16:58:24</span> <span class="c-sky">Mac</span>       <span class="c-blue">192.168.179.129</span> <span class="c-text">example.com</span></span>
+<span class="line"><span class="c-dim">16:58:27</span> <span class="c-sky">iPhone</span>    <span class="c-blue">192.168.179.154</span> <span class="c-text">time.apple.com</span></span>
+
+<span class="c-peach">📡 Logging läuft (Interface 1-lan) — Gerätefilter: Alle Netzwerkgeräte</span>
+<span class="c-mauve">&lt;g&gt;</span><span class="c-text">-Gerätefilter </span><span class="c-green">An</span>   <span class="c-mauve">&lt;e&gt;</span><span class="c-text">-Gerätefilter ändern</span>   <span class="c-mauve">&lt;s&gt;</span><span class="c-text">-Sperrliste </span><span class="c-green">An</span>   <span class="c-mauve">&lt;t&gt;</span><span class="c-text">-Telegram </span><span class="c-green">An</span>   <span class="c-mauve">&lt;x&gt;</span><span class="c-text">-Hauptmenü</span></pre>
+      </div>
+      <p class="shot-caption">Treffer auf der <code>blocklist.txt</code> erscheinen rot (hier:
+      <span class="c-red">heise.de</span>) — und lösen bei aktivem Telegram sofort einen Push aus.</p>
+    </section>
+
+    <section id="setup" class="section">
+      <h2>Setup</h2>
+      <div class="grid two">
+        <div class="panel">
+          <h3>1 · FRITZ!Box vorbereiten</h3>
+          <ul>
+            <li>Benutzer anlegen: <em>System → FRITZ!Box-Benutzer → Benutzer hinzufügen</em> (Recht <strong>„FRITZ!Box Einstellungen“</strong>)</li>
+            <li>TR-064 erlauben: <em>Heimnetz → Netzwerk → Netzwerkeinstellungen → „Zugriff für Anwendungen zulassen“</em></li>
+            <li>Zugang in der App unter <strong>1 · Verbindung Fritzbox</strong> eintragen</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>2 · Werkzeuge installieren</h3>
+          <table class="tbl">
+            <thead><tr><th>Tool</th><th>macOS</th><th>Debian/Ubuntu</th></tr></thead>
+            <tbody>
+              <tr><td>figlet</td><td><code>brew install figlet</code></td><td><code>apt-get install figlet</code></td></tr>
+              <tr><td>curl</td><td><code>brew install curl</code></td><td><code>apt-get install curl</code></td></tr>
+              <tr><td>tshark</td><td><code>brew install wireshark</code></td><td><code>apt-get install tshark</code></td></tr>
+              <tr><td>python3</td><td><code>brew install python</code></td><td><code>apt-get install python3</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="panel span-all">
+          <h3>3 · Installieren &amp; starten</h3>
+          <div class="install-box small">
+            <code id="install-cmd-2">curl -fsSL … | sh</code>
+            <button class="copy-btn" data-copy="install-cmd-2" aria-label="Befehl kopieren">Kopieren</button>
+          </div>
+          <p>oder klassisch:</p>
+          <pre class="codeblock">git clone https://github.com/forbidden-fruits/lauschbox
+cd lauschbox
+./lauschbox</pre>
+          <p>Der Installer legt <code>~/.config/lauschbox</code> an und lädt
+          <code>blocklist.txt</code> und <code>lauschbox.env</code> (Puffer-Limits
+          <code>LOG_MAX_LINES</code>/<code>BLOCKLIST_MAX_LINES</code>, je 1000)
+          dorthin. lauschbox sucht Konfigdateien
+          (<code>.fritzbox.env</code>, <code>.telegram.env</code>,
+          <code>.devices.env</code>, <code>lauschbox.env</code>) und die Sperrliste
+          <strong>zuerst im aktuellen Verzeichnis</strong>, danach in
+          <code>~/.config/lauschbox</code>. Fehlt <code>lauschbox.env</code>
+          an beiden Orten, wird sie mit Defaults im aktuellen Verzeichnis
+          angelegt.</p>
+        </div>
+        <div class="panel span-all">
+          <h3>4 · Telegram (optional)</h3>
+          <ul>
+            <li>Bot bei <strong>@BotFather</strong> anlegen (<code>/newbot</code>) → Token</li>
+            <li>Dem Bot einmal <code>/start</code> schicken</li>
+            <li>Chat-ID via <strong>@userinfobot</strong> oder <code>getUpdates</code> ermitteln</li>
+            <li>In der App unter <strong>2 · Verbindung Telegram</strong> eintragen</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="usage" class="section">
+      <h2>Nutzung</h2>
+      <div class="grid two">
+        <div class="panel">
+          <h3>Tasten im Logging</h3>
+          <table class="tbl">
+            <tbody>
+              <tr><td><kbd>g</kbd></td><td>Gerätefilter an/aus</td></tr>
+              <tr><td><kbd>e</kbd></td><td>Gerätefilter ändern</td></tr>
+              <tr><td><kbd>s</kbd></td><td>Sperrliste an/aus (an = nur Treffer)</td></tr>
+              <tr><td><kbd>t</kbd></td><td>Telegram an/aus (nur mit Sperrliste)</td></tr>
+              <tr><td><kbd>x</kbd></td><td>zurück zum Hauptmenü</td></tr>
+              <tr><td><kbd>↑</kbd>/<kbd>↓</kbd></td><td>zeilenweise scrollen</td></tr>
+              <tr><td><kbd>PgUp</kbd>/<kbd>PgDn</kbd></td><td>seitenweise scrollen</td></tr>
+              <tr><td><kbd>Home</kbd>/<kbd>Ende</kbd></td><td>Anfang / zurück zum Live-Ende</td></tr>
+              <tr><td>Mausrad</td><td>scrollen</td></tr>
+            </tbody>
+          </table>
+          <p>Beim Hochscrollen pinnt die Ansicht — neue Einträge laufen im
+          Hintergrund weiter (Ringpuffer, einstellbar via
+          <code>LOG_MAX_LINES</code> in <code>lauschbox.env</code>) und werden in
+          der Statuszeile gezählt. <kbd>Ende</kbd> kehrt zur Live-Ansicht zurück.
+          Banner und Statusleiste bleiben statisch.</p>
+        </div>
+        <div class="panel">
+          <h3>blocklist.txt</h3>
+          <pre class="codeblock"># eine Domain pro Zeile
+example.com
+tracking.example.org</pre>
+          <p>Suffix-Matching: ein Eintrag matcht auch alle Subdomains.
+          <code>#</code> am Zeilenanfang = Kommentar. Gesucht wird zuerst im
+          aktuellen Verzeichnis, dann unter
+          <code>~/.config/lauschbox/blocklist.txt</code>. Die Übersicht (Menü 5)
+          ist scrollbar; eingelesen werden max. <code>BLOCKLIST_MAX_LINES</code>
+          Zeilen (s. <code>lauschbox.env</code>).</p>
+          <h3 class="mt">Bekannte Grenzen</h3>
+          <p>Angezeigt wird nur, was bei der Fritzbox ankommt: DNS-Cache,
+          DoH/DoT, iCloud Private Relay oder VPN am Gerät machen Queries unsichtbar.</p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <p>lauschbox · <a href="https://github.com/forbidden-fruits/lauschbox/blob/main/LIZENZ.txt" target="_blank" rel="noopener">MIT Lizenz</a> · <a href="https://github.com/forbidden-fruits/lauschbox" target="_blank" rel="noopener">GitHub</a> · <span id="year"></span></p>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite">✓ In Zwischenablage kopiert</div>
+
+  <script src="app.js"></script>
+</body>
+</html>
