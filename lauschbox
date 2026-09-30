@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# lauschbox-sonnet — DNS-Lauscher für die FRITZ!Box (optimierte Variante)
+# lauschbox 2 — DNS-Lauscher für die FRITZ!Box (optimierte Variante)
 #
 # Gegenüber `lauschbox`:
 #   Technik   Geräteliste in EINEM Request (statt N SOAP-Calls), Login und
@@ -22,15 +22,15 @@ set -u
 set -f
 shopt -s nocasematch
 
-VERSION="2.0-sonnet"
+VERSION="2.0"
 US=$'\037'
 NL=$'\n'
 
 usage() {
   cat <<EOF
-lauschbox-sonnet $VERSION — DNS-Lauscher für die FRITZ!Box
+lauschbox $VERSION — DNS-Lauscher für die FRITZ!Box
 
-Aufruf: lauschbox-sonnet [Option]
+Aufruf: lauschbox [Option]
   -l, --log        direkt in die DNS-Logging-Ansicht starten
       --no-color   ohne Farben (auch via NO_COLOR=1)
   -V, --version    Version anzeigen
@@ -42,7 +42,7 @@ AUTOSTART=0
 for _a in "$@"; do
   case $_a in
     -h|--help)    usage; exit 0 ;;
-    -V|--version) echo "lauschbox-sonnet $VERSION"; exit 0 ;;
+    -V|--version) echo "lauschbox $VERSION"; exit 0 ;;
     -l|--log)     AUTOSTART=1 ;;
     --no-color)   NO_COLOR=1 ;;
     *) echo "Unbekannte Option: $_a" >&2; usage >&2; exit 2 ;;
@@ -51,7 +51,7 @@ done
 unset _a
 
 if [[ ! -t 0 || ! -t 1 ]]; then
-  echo "lauschbox-sonnet braucht ein interaktives Terminal." >&2
+  echo "lauschbox braucht ein interaktives Terminal." >&2
   exit 1
 fi
 
@@ -74,7 +74,8 @@ CAPTURE_IFACE="1-lan"      # Fritzbox-Schnittstelle der Aufzeichnung
 DEDUPE_SECS=2              # identische Anfrage (Gerät+Domain) innerhalb n s ausblenden; 0 = aus
 NOTIFY_COOLDOWN=30         # Telegram: gleicher Treffer (Gerät+Domain) frühestens nach n s erneut; 0 = aus
 DEVICE_REFRESH_SECS=300    # Geräteliste im Hintergrund auffrischen; 0 = aus
-LOG_FILE="$CONFIG_DIR/dns.log"
+LOG_FILE_DEFAULT="$CONFIG_DIR/dns.log"
+LOG_FILE="$LOG_FILE_DEFAULT"
 
 # ---------- .env-Parser (führt nichts aus, nur Whitelist-Variablen) ----------
 load_env() {  # load_env DATEI VAR...
@@ -106,6 +107,7 @@ _posint LOG_MAX_LINES 1000; _posint BLOCKLIST_MAX_LINES 1000; _posint DEDUPE_SEC
 _posint NOTIFY_COOLDOWN 30; _posint DEVICE_REFRESH_SECS 300
 ((LOG_MAX_LINES > 0)) || LOG_MAX_LINES=1000
 ((BLOCKLIST_MAX_LINES > 0)) || BLOCKLIST_MAX_LINES=1000
+[[ -n $LOG_FILE ]] || LOG_FILE="$LOG_FILE_DEFAULT"
 [[ $CAPTURE_IFACE =~ ^[A-Za-z0-9_.-]+$ ]] || CAPTURE_IFACE="1-lan"
 
 # ---------- Farben: Catppuccin Macchiato ----------
@@ -347,6 +349,21 @@ save_env() {  # save_env DATEI VAR...  (0600, atomar)
 save_fb()     { save_env "$ENV_FB" FB_IP FB_USER FB_PASS; }
 save_tg()     { save_env "$ENV_TG" TG_TOKEN TG_CHAT_ID; }
 save_filter() { save_env "$ENV_DEV" DEVICE_FILTER DEVICE_FILTER_NAMES; }
+
+set_env_key() {  # set_env_key DATEI VAR WERT — ersetzt/ergänzt VAR, übrige Zeilen bleiben; WERT leer = entfernen
+  local f=$1 k=$2 v=$3 line tmp re="^[[:space:]]*(export[[:space:]]+)?$2="
+  mkdir -p "$(dirname "$f")"
+  tmp=$(mktemp "$f.XXXXXX") || return 1
+  {
+    if [[ -f $f ]]; then
+      while IFS= read -r line || [[ -n $line ]]; do
+        [[ $line =~ $re ]] || printf '%s\n' "$line"
+      done < "$f"
+    fi
+    [[ -n $v ]] && printf '%s=%s\n' "$k" "$(sq "$v")"
+  } > "$tmp"
+  chmod 600 "$tmp"; mv -f "$tmp" "$f"
+}
 
 load_fb() {
   FB_IP=""; FB_USER=""; FB_PASS=""
@@ -1248,26 +1265,59 @@ ui_stats() {
   anykey "Taste = zurück zum Hauptmenü"
 }
 
+# ---------- Menüpunkt 7: Logdatei Pfad ----------
+ui_logpath() {
+  local p
+  screen
+  title "📝 Logdatei Pfad"
+  info "ℹ️  Aktuell:  $LOG_FILE"
+  info "   Standard:  $LOG_FILE_DEFAULT"
+  info "   Gilt für das Datei-Log (Taste l im Logging). Gespeichert in $ENV_MAIN."
+  echo
+  ask p "${C_TEXT}Neuer Pfad (absolut, ~ erlaubt) — leer = Standard${C_RESET}"
+  [[ $p == "~/"* ]] && p="$HOME/${p#\~/}"
+  if [[ -z $p ]]; then
+    set_env_key "$ENV_MAIN" LOG_FILE "" || { err "✖ Konnte $ENV_MAIN nicht schreiben"; anykey; return 1; }
+    LOG_FILE="$LOG_FILE_DEFAULT"
+    echo; ok "✔ Standard wiederhergestellt: $LOG_FILE"
+  elif [[ $p != /* ]]; then
+    echo; err "✖ Bitte einen absoluten Pfad angeben."; anykey; return 1
+  elif [[ -d $p ]]; then
+    echo; err "✖ $p ist ein Verzeichnis."; anykey; return 1
+  else
+    if ! { mkdir -p "$(dirname "$p")" && : >> "$p"; } 2>/dev/null; then
+      echo; err "✖ $p nicht beschreibbar"; anykey; return 1
+    fi
+    set_env_key "$ENV_MAIN" LOG_FILE "$p" || { err "✖ Konnte $ENV_MAIN nicht schreiben"; anykey; return 1; }
+    LOG_FILE=$p
+    echo; ok "✔ Gespeichert: $LOG_FILE"
+  fi
+  anykey
+  return 0
+}
+
 # ---------- Hauptmenü ----------
-MENU_LABELS=("🔌  Verbindung Fritzbox" "✈️   Verbindung Telegram" "📱  Gerätefilter" "📡  DNS Logging" "🚫  Sperrliste anzeigen" "📊  Statistik" "👋  Ende")
+MENU_LABELS=("🔌  Verbindung Fritzbox" "✈️   Verbindung Telegram" "📱  Gerätefilter" "📡  DNS Logging" "🚫  Sperrliste anzeigen" "📊  Statistik" "📝  Logdatei Pfad" "👋  Ende")
 
 menu_dashboard() {  # Statuszeilen
-  local fbs tgs fs bls
+  local fbs tgs fs bls lfs
   if load_fb; then fbs="${C_GREEN}● ${C_TEXT}$FB_IP ${C_OVERLAY}($FB_USER)"; else fbs="${C_RED}○ ${C_OVERLAY}nicht konfiguriert"; fi
   if load_tg; then tgs="${C_GREEN}● ${C_TEXT}konfiguriert"; else tgs="${C_RED}○ ${C_OVERLAY}nicht konfiguriert"; fi
   if load_filter; then fs="${C_SKY}${DEVICE_FILTER_NAMES}"; else fs="${C_OVERLAY}noch nicht gewählt"; fi
   if load_blocklist; then bls="${C_GREEN}● ${C_TEXT}${BL_COUNT} Domains"; else bls="${C_RED}○ ${C_OVERLAY}keine blocklist.txt"; fi
+  if [[ $LOG_FILE == "$LOG_FILE_DEFAULT" ]]; then lfs="${C_TEXT}${LOG_FILE/#$HOME/~} ${C_OVERLAY}(Standard)"; else lfs="${C_TEXT}${LOG_FILE/#$HOME/~}"; fi
   DASH_1="  ${C_OVERLAY}Fritzbox    $fbs"
   DASH_2="  ${C_OVERLAY}Telegram    $tgs"
   DASH_3="  ${C_OVERLAY}Filter      $fs"
   DASH_4="  ${C_OVERLAY}Sperrliste  $bls"
+  DASH_5="  ${C_OVERLAY}Logdatei    $lfs"
 }
 
 menu_draw() {  # menu_draw AUSWAHL
   local i n=${#MENU_LABELS[@]} row=$((HDR_ROWS + 1))
   printf '\033[%d;1H' "$row"
-  printf '%s\033[K%s\n%s\033[K%s\n%s\033[K%s\n%s\033[K%s\n\033[K\n' \
-    "$DASH_1" "$C_RESET" "$DASH_2" "$C_RESET" "$DASH_3" "$C_RESET" "$DASH_4" "$C_RESET"
+  printf '%s\033[K%s\n%s\033[K%s\n%s\033[K%s\n%s\033[K%s\n%s\033[K%s\n\033[K\n' \
+    "$DASH_1" "$C_RESET" "$DASH_2" "$C_RESET" "$DASH_3" "$C_RESET" "$DASH_4" "$C_RESET" "$DASH_5" "$C_RESET"
   for ((i = 0; i < n; i++)); do
     if ((i == $1)); then
       printf '  %s%s ▸ %s%d%s  %s%s%s\033[K%s\n' "$C_SEL" "$C_MAUVE" "$C_BOLD" "$((i + 1))" "$C_NOBOLD" "$C_TEXT" "${MENU_LABELS[i]}" "" "$C_RESET"
@@ -1287,7 +1337,8 @@ menu_run() {
     3) ui_logging ;;
     4) ui_blocklist ;;
     5) ui_stats ;;
-    6) exit 0 ;;
+    6) ui_logpath ;;
+    7) exit 0 ;;
   esac
   return 0
 }

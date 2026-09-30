@@ -36,6 +36,17 @@ else
 LOG_MAX_LINES=1000
 # Maximale Zeilen aus blocklist.txt in der Sperrlisten-Anzeige
 BLOCKLIST_MAX_LINES=1000
+# Schnittstelle der Fritzbox-Aufzeichnung
+CAPTURE_IFACE=1-lan
+# Identische Anfragen (Gerät+Domain) innerhalb n Sekunden ausblenden; 0 = aus
+DEDUPE_SECS=2
+# Telegram: gleicher Treffer frühestens nach n Sekunden erneut melden; 0 = aus
+NOTIFY_COOLDOWN=30
+# Geräteliste (Namensauflösung) alle n Sekunden auffrischen; 0 = aus
+DEVICE_REFRESH_SECS=300
+# Ziel des Datei-Logs (Taste l) — absoluter Pfad, ~ und $HOME werden nicht aufgelöst
+# Standard: ~/.config/lauschbox/dns.log
+#LOG_FILE=/Users/dein-name/.config/lauschbox/dns.log
 EOF
   echo "→ lauschbox.env mit Standard-Limits nach $CONFIG_DIR geschrieben"
 fi

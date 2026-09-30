@@ -30,10 +30,11 @@ Hauptmenü:
 |_|\__,_|\__,_|___/\___|_| |_|_.__/ \___/_/\_\
   DNS-Lauscher für die FRITZ!Box
 
-  Fritzbox    ● 192.168.179.1 (andreas)
+  Fritzbox    ● 192.168.179.1 (benutzer)
   Telegram    ● konfiguriert
   Filter      iPhone
   Sperrliste  ● 104 Domains
+  Logdatei    ~/.config/lauschbox/dns.log (Standard)
 
      1  🔌  Verbindung Fritzbox
      2  ✈️   Verbindung Telegram
@@ -41,9 +42,10 @@ Hauptmenü:
    ▸ 4  📡  DNS Logging
      5  🚫  Sperrliste anzeigen
      6  📊  Statistik
-     7  👋  Ende
+     7  📝  Logdatei Pfad
+     8  👋  Ende
 
-  ↑/↓ wählen · Enter öffnen · 1-7 direkt · q Ende
+  ↑/↓ wählen · Enter öffnen · 1-8 direkt · q Ende
 ```
 
 DNS-Logging (Treffer der Sperrliste mit rotem `▌` am Rand):
@@ -52,7 +54,7 @@ DNS-Logging (Treffer der Sperrliste mit rotem `▌` am Rand):
    17:57:21 Mac          192.168.179.129 heise.de
    17:57:21 Mac          192.168.179.129 example.com
  ▌ 17:57:21 Mac          192.168.179.129 pornhub.com
-   17:57:24 iPad         192.168.179.126 iPad-von-Andreas.local
+   17:57:24 iPad         192.168.179.126 iPad.local
    17:57:31 iPhone       192.168.179.154 time.apple.com
 
  ── 📱 iPhone, Mac  ·  1-lan ─────────────────────────────────────────────
@@ -260,7 +262,7 @@ zurück.
 ### Datei-Log
 
 `l` im Log schreibt jede angezeigte Anfrage zusätzlich in eine Textdatei
-(Standard `~/.config/lauschbox/dns.log`, änderbar über `LOG_FILE`):
+(Standard `~/.config/lauschbox/dns.log`, änderbar über Menü **[7]** oder `LOG_FILE`):
 
 ```
 2026-09-30 17:57:21 Mac 192.168.179.129 heise.de
@@ -283,7 +285,7 @@ wurden, sonst in `~/.config/lauschbox/`.
 | `.telegram.env` | `TG_TOKEN`, `TG_CHAT_ID` | Menü [2] |
 | `.devices.env` | `DEVICE_FILTER` (MACs, kommagetrennt, oder `ALL`), `DEVICE_FILTER_NAMES` | Menü [3] |
 | `blocklist.txt` | Sperrliste | Installer / von Hand |
-| `lauschbox.env` | Einstellungen (s. u.) | Installer / von Hand |
+| `lauschbox.env` | Einstellungen (s. u.) | Installer / von Hand / Menü [7] (`LOG_FILE`) |
 | `dns.log` | Datei-Log | Taste `l` |
 
 Die `.env`-Dateien werden mit Rechten `600` gespeichert. Sie enthalten

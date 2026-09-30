@@ -280,6 +280,7 @@ cd lauschbox
               <li><b>[3] Gerätefilter</b> — Geräte auswählen</li>
               <li><b>[4] DNS Logging</b> — los geht’s</li>
             </ol>
+            <p class="note">Weitere Punkte: <b>[5]</b> Sperrliste anzeigen · <b>[6]</b> Statistik · <b>[7]</b> Logdatei Pfad (Ziel des Datei-Logs) · <b>[8]</b> Ende. Der aktuelle Log-Pfad steht im Kopf des Hauptmenüs.</p>
             <p class="note">Direkt ins Log starten: <code>lauschbox --log</code></p>
           </div>
         </li>
@@ -352,7 +353,7 @@ cd lauschbox
               <tr><td><code>.telegram.env</code></td><td><code>TG_TOKEN</code>, <code>TG_CHAT_ID</code></td></tr>
               <tr><td><code>.devices.env</code></td><td><code>DEVICE_FILTER</code> (MACs oder <code>ALL</code>), <code>DEVICE_FILTER_NAMES</code></td></tr>
               <tr><td><code>blocklist.txt</code></td><td>Sperrliste</td></tr>
-              <tr><td><code>lauschbox.env</code></td><td>Einstellungen (rechts)</td></tr>
+              <tr><td><code>lauschbox.env</code></td><td>Einstellungen (rechts) · <code>LOG_FILE</code> auch über Menü <b>[7]</b></td></tr>
               <tr><td><code>dns.log</code></td><td>Datei-Log (Taste <kbd>l</kbd>)</td></tr>
             </tbody>
           </table>
@@ -381,7 +382,7 @@ DEDUPE_SECS=2
 NOTIFY_COOLDOWN=30
 <span class="c-dim"># Gerätenamen auffrischen alle n Sek.</span>
 DEVICE_REFRESH_SECS=300
-<span class="c-dim"># Datei-Log (absoluter Pfad)</span>
+<span class="c-dim"># Datei-Log (absoluter Pfad) — auch über Menü [7] "Logdatei Pfad" setzbar</span>
 LOG_FILE=/Users/du/.config/lauschbox/dns.log</pre>
           <table class="tbl">
             <thead><tr><th>Variable</th><th>Standard</th></tr></thead>
