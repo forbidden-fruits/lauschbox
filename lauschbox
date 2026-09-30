@@ -1,99 +1,196 @@
 #!/usr/bin/env bash
 #
-# lauschbox — TUI zum Loggen der DNS-Aufrufe einer FRITZ!Box
-# Umsetzung gemäß PLAN.md / TECH.md
+# lauschbox-sonnet — DNS-Lauscher für die FRITZ!Box (optimierte Variante)
+#
+# Gegenüber `lauschbox`:
+#   Technik   Geräteliste in EINEM Request (statt N SOAP-Calls), Login und
+#             Geräteliste parallel, Secrets nie in argv (ps-sicher), Auto-
+#             Reconnect bei Capture-Abbruch, Resize-Handling, sicherer
+#             .env-Parser (kein `source`), private Temp-Dir, Alt-Screen,
+#             O(1)-Gerätenamen- und O(Labels)-Sperrlisten-Lookup ohne Forks.
+#   Funktion  Checkbox-Auswahl für Geräte (auch Offline-Geräte), Menü mit
+#             Pfeiltasten, Duplikat-Unterdrückung (A/AAAA/HTTPS-Bursts),
+#             Telegram-Cooldown, Pause, Puffer leeren, Datei-Log, Statistik,
+#             hosts-Format in der Sperrliste, Verbindungstests.
+#   Optik     Banner mit Farbverlauf, Dashboard, Sparkline (Anfragen/s),
+#             Statusleiste, Pill-Tastenleiste, Spaltenlayout, Trefferbalken.
+#
+# Nutzt dieselben Konfig-Dateien wie `lauschbox` (kompatibel).
+# bash >= 3.2 (macOS-System-Bash).
 #
 set -u
+set -f
 shopt -s nocasematch
 
-# ---------- Pfade ----------
-# Konfigdateien & Sperrliste werden zuerst im aktuellen Verzeichnis gesucht,
-# danach unter ~/.config/lauschbox (dorthin lädt der Installer die
-# blocklist.txt; neu angelegte Konfigdateien landen ebenfalls dort).
+VERSION="2.0-sonnet"
+US=$'\037'
+NL=$'\n'
+
+usage() {
+  cat <<EOF
+lauschbox-sonnet $VERSION — DNS-Lauscher für die FRITZ!Box
+
+Aufruf: lauschbox-sonnet [Option]
+  -l, --log        direkt in die DNS-Logging-Ansicht starten
+      --no-color   ohne Farben (auch via NO_COLOR=1)
+  -V, --version    Version anzeigen
+  -h, --help       diese Hilfe
+EOF
+}
+
+AUTOSTART=0
+for _a in "$@"; do
+  case $_a in
+    -h|--help)    usage; exit 0 ;;
+    -V|--version) echo "lauschbox-sonnet $VERSION"; exit 0 ;;
+    -l|--log)     AUTOSTART=1 ;;
+    --no-color)   NO_COLOR=1 ;;
+    *) echo "Unbekannte Option: $_a" >&2; usage >&2; exit 2 ;;
+  esac
+done
+unset _a
+
+if [[ ! -t 0 || ! -t 1 ]]; then
+  echo "lauschbox-sonnet braucht ein interaktives Terminal." >&2
+  exit 1
+fi
+
+# ---------- Pfade & Einstellungen ----------
 CONFIG_DIR="$HOME/.config/lauschbox"
-conf_path() {  # conf_path DATEINAME → Pfad im CWD falls vorhanden, sonst in CONFIG_DIR
+conf_path() {  # zuerst CWD, sonst ~/.config/lauschbox
   if [[ -f $PWD/$1 ]]; then printf '%s/%s' "$PWD" "$1"
   else printf '%s/%s' "$CONFIG_DIR" "$1"; fi
 }
 ENV_FB="$(conf_path .fritzbox.env)"
 ENV_TG="$(conf_path .telegram.env)"
 ENV_DEV="$(conf_path .devices.env)"
+ENV_MAIN="$(conf_path lauschbox.env)"
 BLOCKLIST_FILE="$(conf_path blocklist.txt)"
 
-# ---------- lauschbox.env: Puffer-Limits ----------
-# Gleiche Suchlogik (CWD zuerst, dann ~/.config/lauschbox); der Installer
-# legt sie im Config-Ordner an. Existiert sie dort UND im aktuellen
-# Verzeichnis nicht, wird sie mit Defaults im aktuellen Verzeichnis erstellt.
-# Ungültige Werte → Default 1000.
-ENV_MAIN="$(conf_path lauschbox.env)"
+# Einstellungen (lauschbox.env, alles optional)
 LOG_MAX_LINES=1000
 BLOCKLIST_MAX_LINES=1000
-if [[ -f $ENV_MAIN ]]; then
-  # shellcheck disable=SC1090
-  . "$ENV_MAIN"
-elif cat > "$PWD/lauschbox.env" 2>/dev/null <<'EOF'
-# lauschbox Einstellungen
-# Maximale Zeilen im Puffer der DNS-Logging-Ansicht (Ringpuffer)
-LOG_MAX_LINES=1000
-# Maximale Zeilen aus blocklist.txt in der Sperrlisten-Anzeige
-BLOCKLIST_MAX_LINES=1000
-EOF
-then
-  ENV_MAIN="$PWD/lauschbox.env"
-fi
-[[ $LOG_MAX_LINES =~ ^[0-9]+$ ]] && ((LOG_MAX_LINES > 0)) || LOG_MAX_LINES=1000
-[[ $BLOCKLIST_MAX_LINES =~ ^[0-9]+$ ]] && ((BLOCKLIST_MAX_LINES > 0)) || BLOCKLIST_MAX_LINES=1000
+CAPTURE_IFACE="1-lan"      # Fritzbox-Schnittstelle der Aufzeichnung
+DEDUPE_SECS=2              # identische Anfrage (Gerät+Domain) innerhalb n s ausblenden; 0 = aus
+NOTIFY_COOLDOWN=30         # Telegram: gleicher Treffer (Gerät+Domain) frühestens nach n s erneut; 0 = aus
+DEVICE_REFRESH_SECS=300    # Geräteliste im Hintergrund auffrischen; 0 = aus
+LOG_FILE="$CONFIG_DIR/dns.log"
+
+# ---------- .env-Parser (führt nichts aus, nur Whitelist-Variablen) ----------
+load_env() {  # load_env DATEI VAR...
+  local f=$1 line k v re esc="'\\''"
+  shift
+  [[ -f $f ]] || return 1
+  re='^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$'
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line =~ $re ]] || continue
+    k=${BASH_REMATCH[2]}; v=${BASH_REMATCH[3]}
+    case " $* " in *" $k "*) ;; *) continue ;; esac
+    v="${v#"${v%%[![:space:]]*}"}"
+    if [[ $v == \'* ]]; then
+      v=${v#\'}; v=${v%\'*}; v=${v//"$esc"/"'"}
+    elif [[ $v == \"* ]]; then
+      v=${v#\"}; v=${v%\"*}
+      v=${v//\\\"/\"}; v=${v//\\\$/\$}; v=${v//\\\\/\\}
+    else
+      v=${v%%[[:space:]]#*}; v="${v%"${v##*[![:space:]]}"}"
+    fi
+    printf -v "$k" '%s' "$v"
+  done < "$f"
+  return 0
+}
+load_env "$ENV_MAIN" LOG_MAX_LINES BLOCKLIST_MAX_LINES CAPTURE_IFACE DEDUPE_SECS \
+  NOTIFY_COOLDOWN DEVICE_REFRESH_SECS LOG_FILE
+_posint() { [[ ${!1} =~ ^[0-9]+$ ]] || printf -v "$1" '%s' "$2"; }
+_posint LOG_MAX_LINES 1000; _posint BLOCKLIST_MAX_LINES 1000; _posint DEDUPE_SECS 2
+_posint NOTIFY_COOLDOWN 30; _posint DEVICE_REFRESH_SECS 300
+((LOG_MAX_LINES > 0)) || LOG_MAX_LINES=1000
+((BLOCKLIST_MAX_LINES > 0)) || BLOCKLIST_MAX_LINES=1000
+[[ $CAPTURE_IFACE =~ ^[A-Za-z0-9_.-]+$ ]] || CAPTURE_IFACE="1-lan"
 
 # ---------- Farben: Catppuccin Macchiato ----------
-_rgb() { printf '\033[38;2;%d;%d;%dm' "$1" "$2" "$3"; }
-C_RESET=$'\033[0m'
-C_BOLD=$'\033[1m'
-C_TEXT="$(_rgb 202 211 245)"      # Text      #cad3f5
-C_OVERLAY="$(_rgb 110 115 141)"   # Overlay0  #6e738d (grau)
-C_SKY="$(_rgb 145 215 227)"       # Sky       #91d7e3 (hellblau)
-C_BLUE="$(_rgb 138 173 244)"      # Blue      #8aadf4 (dunkelblau)
-C_RED="$(_rgb 237 135 150)"       # Red       #ed8796
-C_GREEN="$(_rgb 166 218 149)"     # Green     #a6da95
-C_MAUVE="$(_rgb 198 160 246)"     # Mauve     #c6a0f6
-C_PEACH="$(_rgb 245 169 127)"     # Peach     #f5a97f
-C_YELLOW="$(_rgb 238 212 159)"    # Yellow    #eed49f
-C_TEAL="$(_rgb 139 213 202)"      # Teal      #8bd5ca
+if [[ -n ${NO_COLOR:-} ]]; then
+  C_RESET=""; C_BOLD=""; C_NOBOLD=""; C_TEXT=""; C_OVERLAY=""; C_SKY=""; C_BLUE=""
+  C_RED=""; C_GREEN=""; C_MAUVE=""; C_PEACH=""; C_YELLOW=""; C_TEAL=""; C_BG=""; C_SEL=""
+else
+  _rgb() { printf '\033[38;2;%d;%d;%dm' "$1" "$2" "$3"; }
+  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_NOBOLD=$'\033[22m'
+  C_TEXT="$(_rgb 202 211 245)"
+  C_OVERLAY="$(_rgb 110 115 141)"
+  C_SKY="$(_rgb 145 215 227)"
+  C_BLUE="$(_rgb 138 173 244)"
+  C_RED="$(_rgb 237 135 150)"
+  C_GREEN="$(_rgb 166 218 149)"
+  C_MAUVE="$(_rgb 198 160 246)"
+  C_PEACH="$(_rgb 245 169 127)"
+  C_YELLOW="$(_rgb 238 212 159)"
+  C_TEAL="$(_rgb 139 213 202)"
+  C_BG=$'\033[48;2;54;58;79m'     # Surface0 — Leisten
+  C_SEL=$'\033[48;2;73;77;100m'   # Surface1 — Auswahlzeile
+fi
 
 # ---------- Globale Zustände ----------
 SID=""
 FB_IP=""; FB_USER=""; FB_PASS=""
 TG_TOKEN=""; TG_CHAT_ID=""
 DEVICE_FILTER=""; DEVICE_FILTER_NAMES=""
-FILTER_ON=0; BLOCK_ON=0; TG_ON=0
+FILTER_ON=1; BLOCK_ON=0; TG_ON=0; FILE_ON=0; PAUSED=0
 EVENT=""
-CURL_PID=""; TSHARK_PID=""; KEY_PID=""
+CURL_PID=""; TSHARK_PID=""; KEY_PID=""; TICK_PID=""; DEVREF_PID=""
 FIFO_PCAP=""; FIFO_OUT=""
-ROWS=24; VIEW_TOP=1; VIEW_BOT=22
-R_NAME=""
-R_KEY=""; R_LINE=""
-LOG_BUF=(); LOG_OFF=0; LOG_NEW=0; LOG_VIEW_H=0
-BLOCK_ENTRIES=()
-DEV_NAME=(); DEV_IP=(); DEV_MAC=(); DEV_IF=(); DEV_COUNT=0
+CAPTURE_ON=0
+ROWS=24; COLS=80; HDR_ROWS=2; COMPACT=1
+VIEW_TOP=1; VIEW_BOT=20; LOG_VIEW_H=1; SHOWN=0
+NAME_W=12; IP_W=15
+R_KEY=""; R_LINE=""; R_NAME=""
+LOG_BUF=(); LOG_OFF=0; LOG_NEW=0
+CNT_TOTAL=0; CNT_HIT=0
+BUCKETS=(); CUR_BUCKET=0
+MSG_TEXT=""; MSG_UNTIL=0
+RECONNECT=0; RETRY_IN=0; BACKOFF=2; ALIVE_TICKS=0
+DEV_NAME=(); DEV_IP=(); DEV_MAC=(); DEV_IF=(); DEV_ACT=(); DEV_GUEST=(); DEV_COUNT=0
+DEV_MAP="$NL"; DEV_AT=0
+BL_SET="$NL"; BL_COUNT=0
+TODAY=""; TICKS=0
+BANNER_TXT=""; BANNER_ROWS=0
+SPACES="                                                                                "
 
-# termios sichern: der Key-Writer (read -s -n 1) wird per kill beendet und
-# könnte den Terminal sonst in no-echo/non-canonical zurücklassen
-TTY_SAVE=""
-[[ -t 0 ]] && TTY_SAVE=$(stty -g 2>/dev/null) || TTY_SAVE=""
+# ---------- Temp-Dir (privat) & Aufräumen ----------
+umask 077
+TMPD=$(mktemp -d "${TMPDIR:-/tmp}/lauschbox.XXXXXX") || { echo "mktemp fehlgeschlagen" >&2; exit 1; }
+STATS="$TMPD/stats.tsv"; : > "$STATS"
+
+TTY_SAVE=$(stty -g 2>/dev/null) || TTY_SAVE=""
 restore_tty() {
   [[ -n $TTY_SAVE ]] && stty "$TTY_SAVE" 2>/dev/null
-  # kritische Bits garantieren — der Snapshot selbst kann bereits korrupt sein,
-  # wenn die Shell den Zustand einer älteren, abgestürzten Session geerbt hat
   stty echo icanon icrnl 2>/dev/null
   return 0
 }
 
-# Terminal beim Beenden immer zurücksetzen
-trap 'printf "\033[r\033[?1002l\033[?1006l"; tput cnorm 2>/dev/null; restore_tty' EXIT
+kill_wait() {  # kill_wait PID
+  [[ -n $1 ]] || return 0
+  { kill "$1" 2>/dev/null; wait "$1" 2>/dev/null; } 2>/dev/null
+  return 0
+}
+
+CLEANED=0
+cleanup() {
+  ((CLEANED)) && return 0
+  CLEANED=1
+  kill_wait "$DEVREF_PID"
+  session_stop
+  ((CAPTURE_ON)) && capture_stopall
+  printf '\033[r\033[?1000l\033[?1002l\033[?1006l\033[?25h\033[?1049l'
+  restore_tty
+  rm -rf "$TMPD"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
 
 # ---------- Abhängigkeiten ----------
 check_deps() {
   local missing=() t
-  for t in figlet curl tshark python3; do
+  for t in curl tshark python3; do
     command -v "$t" >/dev/null 2>&1 || missing+=("$t")
   done
   ((${#missing[@]} == 0)) && return 0
@@ -114,55 +211,99 @@ check_deps() {
   exit 1
 }
 
-# ---------- UI-Bausteine ----------
-banner() {
-  printf '%s' "$C_MAUVE"
-  figlet -D lauschbox
-  printf '%s' "$C_RESET"
-}
-banner_rows() { figlet -D lauschbox | wc -l | tr -d ' '; }
+# ---------- Layout, Banner (Farbverlauf), Kopfzeile ----------
+lerp() { printf '%d' $(( $1 + ($2 - $1) * $3 / $4 )); }  # von bis i n
 
-screen() {  # Banner fixiert oben + 2 Leerzeilen — gilt für die ganze App
-  clear
-  banner
-  echo; echo
+build_banner() {  # figlet (optional) → BANNER_TXT mit vertikalem Farbverlauf
+  BANNER_TXT=""; BANNER_ROWS=0
+  command -v figlet >/dev/null 2>&1 || return 0
+  local art line i=0 n r g b
+  local -a lines=()
+  art=$(figlet lauschbox 2>/dev/null) || return 0
+  while IFS= read -r line; do
+    [[ -z ${line//[[:space:]]/} ]] && continue
+    lines+=("$line")
+  done <<< "$art"
+  n=${#lines[@]}
+  ((n > 0)) || return 0
+  for line in "${lines[@]}"; do
+    if [[ -n ${NO_COLOR:-} ]]; then
+      BANNER_TXT+="$line$NL"
+    else
+      r=$(lerp 198 145 $i $((n > 1 ? n - 1 : 1)))
+      g=$(lerp 160 215 $i $((n > 1 ? n - 1 : 1)))
+      b=$(lerp 246 227 $i $((n > 1 ? n - 1 : 1)))
+      BANNER_TXT+="$(printf '\033[38;2;%d;%d;%dm' "$r" "$g" "$b")$line$C_RESET$NL"
+    fi
+    i=$((i + 1))
+  done
+  BANNER_ROWS=$n
 }
 
-info() { printf '  %s%s%s\n' "$C_OVERLAY" "$1" "$C_RESET"; }
-ok()   { printf '  %s%s%s\n' "$C_GREEN" "$1" "$C_RESET"; }
-warn() { printf '  %s%s%s\n' "$C_YELLOW" "$1" "$C_RESET"; }
-err()  { printf '  %s%s%s\n' "$C_RED" "$1" "$C_RESET"; }
+layout() {  # Terminalgröße + Kopfzeilen-Modus neu bestimmen
+  local sz
+  sz=$(stty size 2>/dev/null </dev/tty) || sz=""
+  if [[ $sz =~ ^([0-9]+)\ ([0-9]+)$ ]]; then
+    ROWS=${BASH_REMATCH[1]}; COLS=${BASH_REMATCH[2]}
+  else
+    ROWS=24; COLS=80
+  fi
+  if ((BANNER_ROWS == 0 || ROWS < 30 || COLS < 50)); then
+    COMPACT=1; HDR_ROWS=2
+  else
+    COMPACT=0; HDR_ROWS=$((BANNER_ROWS + 2))
+  fi
+  if ((COLS >= 100)); then NAME_W=18; else NAME_W=12; fi
+}
+
+header() {  # zeichnet HDR_ROWS Zeilen ab Zeile 1
+  if ((COMPACT)); then
+    printf ' %s%s▌ lauschbox%s %s· DNS-Lauscher für die FRITZ!Box · v%s%s\n\n' \
+      "$C_MAUVE" "$C_BOLD" "$C_NOBOLD" "$C_OVERLAY" "$VERSION" "$C_RESET"
+  else
+    printf '%s' "$BANNER_TXT"
+    printf ' %s DNS-Lauscher für die FRITZ!Box · v%s%s\n\n' "$C_OVERLAY" "$VERSION" "$C_RESET"
+  fi
+}
+
+screen() { layout; printf '\033[r\033[H\033[2J'; header; }
+
+rep() {  # rep ZEICHEN N → Ausgabe
+  local s
+  ((${2} > 0)) || return 0
+  printf -v s '%*s' "$2" ''
+  printf '%s' "${s// /$1}"
+}
+
+title() { printf '  %s%s%s%s\n\n' "$C_BOLD" "$C_MAUVE" "$1" "$C_RESET"; }
+info()  { printf '  %s%s%s\n' "$C_OVERLAY" "$1" "$C_RESET"; }
+ok()    { printf '  %s%s%s\n' "$C_GREEN" "$1" "$C_RESET"; }
+warn()  { printf '  %s%s%s\n' "$C_YELLOW" "$1" "$C_RESET"; }
+err()   { printf '  %s%s%s\n' "$C_RED" "$1" "$C_RESET"; }
 
 ask() {  # ask VAR LABEL [secret]
   local __v=$1 __s=${3:-} val
   printf '  %b\n' "$2"
-  printf '  %s>%s ' "$C_TEAL" "$C_RESET"
-  if [[ -n $__s ]]; then IFS= read -r -s val; echo; else IFS= read -r val; fi
+  printf '  %s❯%s ' "$C_TEAL" "$C_RESET"
+  if [[ -n $__s ]]; then IFS= read -r -s val; echo; else IFS= read -r -e val; fi
   printf -v "$__v" '%s' "$val"
 }
 
-keypress() {
-  local _
-  printf '\n  %s%s%s' "$C_OVERLAY" "${1:-Enter = weiter}" "$C_RESET"
-  IFS= read -r _
-}
+# Schritt-Anzeige: "  ⏳ text" → später zu ✔/✖ umschreiben
+step()      { printf '  %s⏳ %s …%s' "$C_OVERLAY" "$1" "$C_RESET"; }
+step_ok()   { printf '\r\033[2K  %s✔ %s%s\n' "$C_GREEN" "$1" "$C_RESET"; }
+step_fail() { printf '\r\033[2K  %s✖ %s%s\n' "$C_RED" "$1" "$C_RESET"; }
 
-# read_key: liest eine Taste inkl. Escape-Sequenzen (Pfeile, PgUp/PgDn,
-# Home/Ende, Mausrad via SGR-Modus ?1006). Ergebnis in R_KEY:
-# einzelnes Zeichen, UP/DOWN/PGUP/PGDN/HOME/END/WUP/WDN, ESC bei nacktem
-# Escape, NONE bei unbekannter Sequenz (z.B. Mausklick), "" bei Enter.
-# Rückgabe 1 bei EOF.
-# Hinweis: bash 3.2 kennt read -t nur mit ganzen Sekunden — Sequenzbytes
-# kommen sofort nach; lediglich ein nacktes ESC kostet 1 s Verzögerung.
+# read_key: eine Taste inkl. Escape-Sequenzen → R_KEY:
+# Zeichen | UP DOWN PGUP PGDN HOME END WUP WDN | ESC | NONE | "" (Enter). EOF → 1.
 read_key() {
   R_KEY=""
-  local k c seq
+  local k c seq=""
   IFS= read -r -s -n 1 k || return 1
   if [[ $k != $'\033' ]]; then R_KEY=$k; return 0; fi
-  seq=""
   while IFS= read -r -s -n 1 -t 1 c; do
     seq+="$c"
-    [[ $c =~ [A-Za-z~] ]] && break   # finales Byte einer CSI-Sequenz
+    [[ $c =~ [A-Za-z~] ]] && break
   done
   case $seq in
     '[A'|'OA')             R_KEY=UP ;;
@@ -171,95 +312,81 @@ read_key() {
     '[6~')                 R_KEY=PGDN ;;
     '[H'|'[1~'|'[7~'|'OH') R_KEY=HOME ;;
     '[F'|'[4~'|'[8~'|'OF') R_KEY=END ;;
-    '[<64;'*)              R_KEY=WUP ;;    # Mausrad hoch (SGR)
-    '[<65;'*)              R_KEY=WDN ;;    # Mausrad runter (SGR)
-    '[<'*)                 R_KEY=NONE ;;   # Klicks etc. ignorieren
+    '[<64;'*)              R_KEY=WUP ;;
+    '[<65;'*)              R_KEY=WDN ;;
     '')                    R_KEY=ESC ;;
     *)                     R_KEY=NONE ;;
   esac
   return 0
 }
 
-confirm_overwrite() {
+anykey() {
+  printf '\n  %s%s%s' "$C_OVERLAY" "${1:-Taste drücken = weiter}" "$C_RESET"
+  while read_key; do [[ $R_KEY != NONE && $R_KEY != WUP && $R_KEY != WDN ]] && break; done
+}
+
+confirm() {  # confirm TEXT → j/J = ja, alles andere nein
+  printf '  %s⚠️  %s [j/N]%s ' "$C_YELLOW" "$1" "$C_RESET"
   local k=""
-  printf '  %s⚠️  %s existiert bereits. Überschreiben? [j/N]%s ' "$C_YELLOW" "$1" "$C_RESET"
-  IFS= read -r k || return 1
-  [[ ${k:0:1} == j ]]
+  IFS= read -r -s -n 1 k || return 1
+  echo
+  [[ $k == j ]]
 }
 
 # ---------- Konfigurationsdateien ----------
-sq() { printf "'"; printf '%s' "$1" | sed "s/'/'\\\\''/g"; printf "'"; }
+sq() { local s=${1//\'/\'\\\'\'}; printf "'%s'" "$s"; }
 
-save_fb() {
-  mkdir -p "$(dirname "$ENV_FB")"
-  {
-    printf 'FB_IP=%s\n'   "$(sq "$FB_IP")"
-    printf 'FB_USER=%s\n' "$(sq "$FB_USER")"
-    printf 'FB_PASS=%s\n' "$(sq "$FB_PASS")"
-  } > "$ENV_FB"
-  chmod 600 "$ENV_FB"
+save_env() {  # save_env DATEI VAR...  (0600, atomar)
+  local f=$1 v tmp
+  shift
+  mkdir -p "$(dirname "$f")"
+  tmp=$(mktemp "$f.XXXXXX") || return 1
+  for v in "$@"; do printf '%s=%s\n' "$v" "$(sq "${!v}")"; done > "$tmp"
+  chmod 600 "$tmp"; mv -f "$tmp" "$f"
 }
+save_fb()     { save_env "$ENV_FB" FB_IP FB_USER FB_PASS; }
+save_tg()     { save_env "$ENV_TG" TG_TOKEN TG_CHAT_ID; }
+save_filter() { save_env "$ENV_DEV" DEVICE_FILTER DEVICE_FILTER_NAMES; }
+
 load_fb() {
   FB_IP=""; FB_USER=""; FB_PASS=""
-  [[ -f $ENV_FB ]] || return 1
-  # shellcheck disable=SC1090
-  . "$ENV_FB"
+  load_env "$ENV_FB" FB_IP FB_USER FB_PASS || return 1
   [[ -n $FB_IP && -n $FB_USER && -n $FB_PASS ]]
-}
-save_tg() {
-  mkdir -p "$(dirname "$ENV_TG")"
-  {
-    printf 'TG_TOKEN=%s\n'   "$(sq "$TG_TOKEN")"
-    printf 'TG_CHAT_ID=%s\n' "$(sq "$TG_CHAT_ID")"
-  } > "$ENV_TG"
-  chmod 600 "$ENV_TG"
 }
 load_tg() {
   TG_TOKEN=""; TG_CHAT_ID=""
-  [[ -f $ENV_TG ]] || return 1
-  # shellcheck disable=SC1090
-  . "$ENV_TG"
+  load_env "$ENV_TG" TG_TOKEN TG_CHAT_ID || return 1
   [[ -n $TG_TOKEN && -n $TG_CHAT_ID ]]
-}
-save_filter() {
-  mkdir -p "$(dirname "$ENV_DEV")"
-  {
-    printf 'DEVICE_FILTER=%s\n'       "$(sq "$DEVICE_FILTER")"
-    printf 'DEVICE_FILTER_NAMES=%s\n' "$(sq "$DEVICE_FILTER_NAMES")"
-  } > "$ENV_DEV"
-  chmod 600 "$ENV_DEV"
 }
 load_filter() {
   DEVICE_FILTER=""; DEVICE_FILTER_NAMES=""
-  [[ -f $ENV_DEV ]] || return 1
-  # shellcheck disable=SC1090
-  . "$ENV_DEV"
+  load_env "$ENV_DEV" DEVICE_FILTER DEVICE_FILTER_NAMES || return 1
   [[ -n $DEVICE_FILTER ]]
 }
 
 # ---------- Fritzbox: Login (SID) ----------
-fb_login() {
-  SID=$(python3 - "$FB_IP" "$FB_USER" "$FB_PASS" <<'PY'
-import sys, urllib.request, urllib.parse, hashlib
+# Passwort läuft per Umgebung ins python-Kind — nie in argv (ps-sicher).
+read -r -d '' PY_LOGIN <<'PY'
+import sys, os, urllib.request, urllib.parse, hashlib
 import xml.etree.ElementTree as ET
-ip, user, pw = sys.argv[1:4]
+ip, user = sys.argv[1:3]
+pw = os.environ.get("LB_PASS", "")
 base = f"http://{ip}/login_sid.lua"
 
 def rd(url, data=None):
-    with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=10) as r:
+    with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=8) as r:
         return ET.fromstring(r.read())
 
 try:
     root = rd(base + "?version=2")
 except Exception as e:
-    print(f"Fehler: {e}", file=sys.stderr)
-    sys.exit(1)
+    print(f"Fehler: {e}", file=sys.stderr); sys.exit(1)
 
 sid = root.findtext("SID") or ""
 ch = root.findtext("Challenge") or ""
 bt = root.findtext("BlockTime") or "0"
 if bt != "0":
-    print(f"Hinweis: BlockTime {bt}s aktiv (zu viele Fehlversuche).", file=sys.stderr)
+    print(f"BlockTime {bt}s aktiv (zu viele Fehlversuche)", file=sys.stderr)
 
 if ch.startswith("2$"):
     try:
@@ -280,89 +407,107 @@ if sid in ("", "0000000000000000"):
         sid = rd(base, post).findtext("SID") or ""
     except Exception as e:
         print(f"Fehler (V1): {e}", file=sys.stderr)
-
 print(sid)
 PY
-  )
+
+fb_login_raw() { LB_PASS="$FB_PASS" python3 -c "$PY_LOGIN" "$FB_IP" "$FB_USER" 2>/dev/null; }
+
+fb_login() {
+  SID=$(fb_login_raw)
   [[ -n $SID && $SID != "0000000000000000" ]]
 }
 
-# ---------- Fritzbox: Geräteliste (TR-064, Digest Auth) ----------
-fetch_devices() {
-  local tmp n ip mac ifc
-  tmp=$(mktemp /tmp/lauschbox-dev.XXXXXX)
-  if python3 - "$FB_IP" "$FB_USER" "$FB_PASS" > "$tmp" <<'PY'
-import sys, urllib.request
+# ---------- Fritzbox: Geräteliste (TR-064) ----------
+# Bevorzugt X_AVM-DE_GetHostListPath: EIN Request für alle Hosts (statt einem
+# SOAP-Call pro Gerät). Fallback: GetGenericHostEntry-Schleife (alte Firmware).
+# Ausgabe pro Gerät: aktiv \x1f name \x1f ip \x1f mac \x1f iface \x1f gast
+read -r -d '' PY_DEVICES <<'PY'
+import sys, os, urllib.request
 import xml.etree.ElementTree as ET
-ip, user, pw = sys.argv[1:4]
-url = f"http://{ip}:49000/upnp/control/hosts"
+ip, user = sys.argv[1:3]
+pw = os.environ.get("LB_PASS", "")
+base = f"http://{ip}:49000"
 URN = "urn:dslforum-org:service:Hosts:1"
 mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
-mgr.add_password(None, url, user, pw)
-opener = urllib.request.build_opener(urllib.request.HTTPDigestAuthHandler(mgr))
+mgr.add_password(None, base + "/", user, pw)
+op = urllib.request.build_opener(urllib.request.HTTPDigestAuthHandler(mgr))
 
 def soap(action, inner=""):
     body = ('<?xml version="1.0" encoding="utf-8"?>'
             '<s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"'
             ' xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
             f'<s:Body><u:{action} xmlns:u="{URN}">{inner}</u:{action}></s:Body></s:Envelope>').encode()
-    req = urllib.request.Request(url, data=body, headers={
+    req = urllib.request.Request(base + "/upnp/control/hosts", data=body, headers={
         "Content-Type": 'text/xml; charset="utf-8"', "SoapAction": f"{URN}#{action}"})
-    root = ET.fromstring(opener.open(req, timeout=10).read())
-    out = {}
-    for el in root.iter():
-        tag = el.tag.split("}")[-1]
-        if tag.startswith("New"):
-            out[tag] = el.text or ""
-    return out
+    root = ET.fromstring(op.open(req, timeout=10).read())
+    return {el.tag.split("}")[-1]: (el.text or "") for el in root.iter()
+            if el.tag.split("}")[-1].startswith("New")}
+
+rows = {}
+def add(name, ipa, mac, act, ifc, guest):
+    mac = mac.strip().lower()
+    if mac:
+        rows[mac] = (act == "1", name.replace("\x1f", " ").strip(), ipa.strip(), mac, ifc.strip(), guest == "1")
 
 try:
-    n = int(soap("GetHostNumberOfEntries")["NewHostNumberOfEntries"])
-except Exception as e:
-    print(f"Fehler: {e}", file=sys.stderr)
-    sys.exit(1)
-
-for i in range(n):
-    print(f"\r  … Gerät {i+1}/{n}", end="", file=sys.stderr, flush=True)
+    path = soap("X_AVM-DE_GetHostListPath")["NewX_AVM-DE_HostListPath"]
+    root = ET.fromstring(op.open(base + path, timeout=20).read())
+    for it in root.iter("Item"):
+        g = lambda t: (it.findtext(t) or "").strip()
+        add(g("HostName"), g("IPAddress"), g("MACAddress"), g("Active"),
+            g("InterfaceType"), g("X_AVM-DE_Guest"))
+except Exception as e1:
     try:
-        e = soap("GetGenericHostEntry", f"<NewIndex>{i}</NewIndex>")
-    except Exception:
-        continue
-    if e.get("NewActive") != "1":
-        continue
-    name = e.get("NewHostName", "").replace("\t", " ")
-    print("\t".join([name, e.get("NewIPAddress", ""),
-                     e.get("NewMACAddress", "").lower(), e.get("NewInterfaceType", "")]))
-print("\r" + " " * 30 + "\r", end="", file=sys.stderr, flush=True)
+        n = int(soap("GetHostNumberOfEntries")["NewHostNumberOfEntries"])
+        for i in range(n):
+            try:
+                e = soap("GetGenericHostEntry", f"<NewIndex>{i}</NewIndex>")
+            except Exception:
+                continue
+            add(e.get("NewHostName", ""), e.get("NewIPAddress", ""), e.get("NewMACAddress", ""),
+                e.get("NewActive", ""), e.get("NewInterfaceType", ""), "0")
+    except Exception as e2:
+        print(f"Fehler: {e2}", file=sys.stderr); sys.exit(1)
+
+for act, name, ipa, mac, ifc, guest in sorted(rows.values(), key=lambda r: (not r[0], r[1].lower(), r[3])):
+    print("\x1f".join(["1" if act else "0", name, ipa, mac, ifc, "1" if guest else "0"]))
 PY
-  then
-    DEV_NAME=(); DEV_IP=(); DEV_MAC=(); DEV_IF=(); DEV_COUNT=0
-    while IFS=$'\t' read -r n ip mac ifc; do
-      DEV_NAME+=("$n"); DEV_IP+=("$ip"); DEV_MAC+=("$mac"); DEV_IF+=("$ifc")
-      DEV_COUNT=$((DEV_COUNT + 1))
-    done < "$tmp"
-    rm -f "$tmp"
-    return 0
-  else
-    rm -f "$tmp"
-    return 1
-  fi
+
+fetch_devices() {  # fetch_devices ZIELDATEI
+  LB_PASS="$FB_PASS" python3 -c "$PY_DEVICES" "$FB_IP" "$FB_USER" > "$1" 2>/dev/null
 }
 
-dev_by_mac() {
+load_devices() {  # load_devices DATEI → DEV_* + DEV_MAP (Namensauflösung ohne Forks)
+  local act n ip mac ifc gst
+  DEV_NAME=(); DEV_IP=(); DEV_MAC=(); DEV_IF=(); DEV_ACT=(); DEV_GUEST=(); DEV_COUNT=0
+  DEV_MAP="$NL"
+  while IFS="$US" read -r act n ip mac ifc gst; do
+    [[ -n $mac ]] || continue
+    DEV_ACT+=("$act"); DEV_NAME+=("$n"); DEV_IP+=("$ip"); DEV_MAC+=("$mac")
+    DEV_IF+=("$ifc"); DEV_GUEST+=("$gst")
+    DEV_COUNT=$((DEV_COUNT + 1))
+    [[ -n $n ]] && DEV_MAP+="$mac=$n$NL"
+  done < "$1"
+  DEV_AT=$SECONDS
+}
+
+resolve_name() {  # MAC → R_NAME (Fallback: ?xx:xx)
   R_NAME=""
-  local i
-  for ((i = 0; i < DEV_COUNT; i++)); do
-    if [[ ${DEV_MAC[$i]} == "$1" ]]; then R_NAME=${DEV_NAME[$i]}; return 0; fi
-  done
-  return 1
+  if [[ $DEV_MAP == *"$NL$1="* ]]; then
+    local rest=${DEV_MAP#*"$NL$1="}
+    R_NAME=${rest%%"$NL"*}
+  fi
+  [[ -n $R_NAME ]] || R_NAME="?${1: -5}"
 }
 
 # ---------- Fritzbox: Paketaufzeichnung ----------
 capture_stopall() {
+  [[ -n $SID ]] || return 0
   curl -s --max-time 8 \
     "http://${FB_IP}/cgi-bin/capture_notimeout?iface=stopall&capture=Stop&sid=${SID}" \
     -o /dev/null 2>/dev/null
+  CAPTURE_ON=0
+  return 0
 }
 
 key_writer() {
@@ -371,476 +516,657 @@ key_writer() {
   done
 }
 
-capture_start() {
-  FIFO_PCAP=$(mktemp -u /tmp/lauschbox-pcap.XXXXXX)
-  FIFO_OUT=$(mktemp -u /tmp/lauschbox-out.XXXXXX)
-  mkfifo "$FIFO_PCAP" "$FIFO_OUT"
-  exec 3<> "$FIFO_OUT"
-  tshark -l -i - -Y 'dns.flags.response == 0' -T fields -E separator=';' \
+ticker() { while sleep 1; do printf 'T\n'; done; }
+
+pipeline_start() {  # curl (pcap-Stream) → tshark → FIFO_OUT
+  FIFO_PCAP="$TMPD/pcap"
+  rm -f "$FIFO_PCAP"; mkfifo "$FIFO_PCAP"
+  tshark -n -l -i - -Y 'dns.flags.response == 0' -T fields -E separator=';' \
     -e frame.time -e eth.src -e ip.src -e ipv6.src -e dns.qry.name \
     < "$FIFO_PCAP" > "$FIFO_OUT" 2>/dev/null &
   TSHARK_PID=$!
   curl -s -N --connect-timeout 5 \
-    "http://${FB_IP}/cgi-bin/capture_notimeout?sid=${SID}&capture=Start&snaplen=&filter=&ifaceorminor=1-lan" \
+    "http://${FB_IP}/cgi-bin/capture_notimeout?sid=${SID}&capture=Start&snaplen=&filter=&ifaceorminor=${CAPTURE_IFACE}" \
     > "$FIFO_PCAP" 2>/dev/null &
   CURL_PID=$!
-  key_writer > "$FIFO_OUT" &
-  KEY_PID=$!
+  CAPTURE_ON=1
 }
 
-capture_stop() {
-  [[ -n $KEY_PID ]]    && { kill "$KEY_PID"    2>/dev/null; wait "$KEY_PID"    2>/dev/null; } 2>/dev/null
-  restore_tty
-  [[ -n $CURL_PID ]]   && { kill "$CURL_PID"   2>/dev/null; wait "$CURL_PID"   2>/dev/null; } 2>/dev/null
-  [[ -n $TSHARK_PID ]] && { kill "$TSHARK_PID" 2>/dev/null; wait "$TSHARK_PID" 2>/dev/null; } 2>/dev/null
-  exec 3>&- 3<&-
+pipeline_stop() {
+  kill_wait "$CURL_PID"; kill_wait "$TSHARK_PID"
+  CURL_PID=""; TSHARK_PID=""
   [[ -n $FIFO_PCAP ]] && rm -f "$FIFO_PCAP"
-  [[ -n $FIFO_OUT ]]  && rm -f "$FIFO_OUT"
-  KEY_PID=""; CURL_PID=""; TSHARK_PID=""; FIFO_PCAP=""; FIFO_OUT=""
+  FIFO_PCAP=""
+}
+
+pipeline_alive() {
+  [[ -n $CURL_PID && -n $TSHARK_PID ]] || return 1
+  kill -0 "$CURL_PID" 2>/dev/null && kill -0 "$TSHARK_PID" 2>/dev/null
+}
+
+session_start() {
+  FIFO_OUT="$TMPD/out"
+  rm -f "$FIFO_OUT"; mkfifo "$FIFO_OUT"
+  exec 3<> "$FIFO_OUT"
+  key_writer < /dev/tty > "$FIFO_OUT" &
+  KEY_PID=$!
+  ticker > "$FIFO_OUT" &
+  TICK_PID=$!
+  pipeline_start
+}
+
+session_stop() {
+  kill_wait "$KEY_PID"; kill_wait "$TICK_PID"
+  KEY_PID=""; TICK_PID=""
+  restore_tty
+  pipeline_stop
+  exec 3>&- 3<&-
+  [[ -n $FIFO_OUT ]] && rm -f "$FIFO_OUT"
+  FIFO_OUT=""
 }
 
 # ---------- Sperrliste ----------
+# Normalisiert per awk: Kommentare, hosts-Format ("0.0.0.0 domain"), "*."-Präfix,
+# Punkte, Kleinschreibung. Ergebnis als Newline-Set → Lookup ohne Forks.
 load_blocklist() {
-  BLOCK_ENTRIES=()
+  BL_SET="$NL"; BL_COUNT=0
   [[ -f $BLOCKLIST_FILE ]] || return 1
-  local l
-  while IFS= read -r l || [[ -n $l ]]; do
-    l=${l%%#*}
-    l="${l#"${l%%[![:space:]]*}"}"
-    l="${l%"${l##*[![:space:]]}"}"
-    [[ -n $l ]] && BLOCK_ENTRIES+=("$l")
-  done < "$BLOCKLIST_FILE"
-  ((${#BLOCK_ENTRIES[@]} > 0))
+  awk '{
+    sub(/#.*/, ""); gsub(/\r/, "")
+    n = split($0, f, /[ \t]+/); d = ""
+    for (i = 1; i <= n; i++) if (f[i] != "") { first = (d == ""); if (first) d = f[i]; else { d = f[i]; break } }
+    d = tolower(d); sub(/^\*\./, "", d); sub(/^\./, "", d); sub(/\.$/, "", d)
+    if (d != "" && d !~ /^[0-9.:]+$/ ) print d
+  }' "$BLOCKLIST_FILE" | sort -u > "$TMPD/bl.txt"
+  BL_COUNT=$(wc -l < "$TMPD/bl.txt" | tr -d ' ')
+  ((BL_COUNT > 0)) || return 1
+  BL_SET="$NL$(<"$TMPD/bl.txt")$NL"
+}
+
+domain_hit() {  # Suffix-Match: d, dann jeweils ohne linkes Label
+  local c=${1%.}
+  while :; do
+    [[ $BL_SET == *"$NL$c$NL"* ]] && return 0
+    [[ $c == *.* ]] || return 1
+    c=${c#*.}
+  done
 }
 
 blocklist_help() {
-  warn "⚠️  Keine blocklist.txt gefunden."
+  warn "⚠️  Keine (nutzbare) blocklist.txt gefunden."
   echo
-  printf '  Lege die Datei %s%s%s an. Format: eine Domain pro Zeile, z.B.:\n\n' "$C_TEAL" "$BLOCKLIST_FILE" "$C_RESET"
-  printf '    %sexample.com%s\n' "$C_TEXT" "$C_RESET"
-  printf '    %stracking.example.org%s\n\n' "$C_TEXT" "$C_RESET"
-  printf '  Ein Eintrag matcht auch alle Subdomains (sub.example.com → example.com).\n'
-  printf '  Zeilen mit %s#%s am Zeilenanfang sind Kommentare.\n' "$C_PEACH" "$C_RESET"
-}
-
-domain_hit() {
-  local d=${1%.} b
-  for b in ${BLOCK_ENTRIES[@]+"${BLOCK_ENTRIES[@]}"}; do
-    [[ $d == "$b" || $d == *".$b" ]] && return 0
-  done
-  return 1
+  printf '  Lege die Datei %s%s%s an. Eine Domain pro Zeile, z.B.:\n\n' "$C_TEAL" "$BLOCKLIST_FILE" "$C_RESET"
+  printf '    %sexample.com%s\n    %stracking.example.org%s\n\n' "$C_TEXT" "$C_RESET" "$C_TEXT" "$C_RESET"
+  printf '  Ein Eintrag matcht auch alle Subdomains. %s#%s = Kommentar,\n' "$C_PEACH" "$C_RESET"
+  printf '  hosts-Format (%s0.0.0.0 domain%s) wird ebenfalls verstanden.\n' "$C_PEACH" "$C_RESET"
 }
 
 # ---------- Telegram ----------
-tg_send() {
-  [[ -n $TG_TOKEN && -n $TG_CHAT_ID ]] || return 0
-  curl -s --max-time 10 -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    --data-urlencode "chat_id=${TG_CHAT_ID}" \
-    --data-urlencode "text=$1" >/dev/null 2>&1 &
+cfg_esc() { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\n'/\\n}; printf '%s' "$s"; }
+
+tg_api() {  # tg_api TEXT → JSON-Antwort. Token via curl-Config auf stdin (nicht in ps).
+  printf 'url = "https://api.telegram.org/bot%s/sendMessage"\ndata-urlencode = "chat_id=%s"\ndata-urlencode = "text=%s"\n' \
+    "$(cfg_esc "$TG_TOKEN")" "$(cfg_esc "$TG_CHAT_ID")" "$(cfg_esc "$1")" \
+    | curl -s --max-time 10 -K -
 }
 
-tg_notify() {  # name ip domain — jeder Treffer löst eine Nachricht aus
-  [[ $TG_ON == 1 ]] || return 0
-  tg_send "🚨 lauschbox: Sperrlisten-Treffer
-Gerät: $1 ($2)
-Domain: $3
-Zeit: $(date '+%H:%M:%S')"
+tg_send() { [[ -n $TG_TOKEN && -n $TG_CHAT_ID ]] && { tg_api "$1" >/dev/null 2>&1 & } ; return 0; }
+
+tg_test() {  # synchron; Erfolg/Fehlertext
+  local resp
+  resp=$(tg_api "✅ lauschbox verbunden ($(hostname -s))") || { R_NAME="keine Verbindung zu api.telegram.org"; return 1; }
+  [[ $resp == *'"ok":true'* ]] && return 0
+  R_NAME=${resp#*\"description\":\"}; R_NAME=${R_NAME%%\"*}
+  [[ -n $R_NAME ]] || R_NAME="unbekannte Antwort"
+  return 1
+}
+
+seen_within() {  # seen_within PRÄFIX KEY SEKUNDEN → 0 wenn zuletzt < n s gesehen, sonst merken
+  local v="$1${2//[^A-Za-z0-9]/_}" last
+  last=${!v:-}
+  if [[ -n $last ]] && (( SECONDS - last < $3 )); then return 0; fi
+  printf -v "$v" '%s' "$SECONDS"
+  return 1
+}
+
+prune_seen() {  # Dedupe-/Cooldown-Variablen begrenzen
+  local -a vs
+  vs=($(compgen -v | grep -E '^(DD|NC)_' )) 2>/dev/null
+  if ((${#vs[@]} > 5000)); then unset "${vs[@]}"; fi
 }
 
 # ---------- DNS-Logging-Ansicht ----------
-bar_stat() {
-  if [[ $1 == 1 ]]; then printf '%sAn%s' "$C_GREEN" "$C_RESET"
-  else printf '%sAus%s' "$C_RED" "$C_RESET"; fi
-}
+SPARK=("▁" "▂" "▃" "▄" "▅" "▆" "▇" "█")
 
-draw_bar() {
-  local seg_t
+toggle_dot() { if [[ $1 == 1 ]]; then printf '%s●' "$C_GREEN"; else printf '%s○' "$C_RED"; fi; }
+
+draw_bar() {  # Pill-Tastenleiste in der letzten Zeile
+  local long=0 s
+  ((COLS >= 104)) && long=1
+  local L_g="Gerätefilter" L_e="ändern" L_s="Sperrliste" L_t="Telegram" L_p="Pause" L_l="Datei" L_c="leeren" L_x="Menü"
+  ((long)) || { L_g="Filter"; L_e="ändern"; L_s="Sperre"; L_t="TG"; L_l="Log"; L_c="clr"; }
+  s="${C_BG}"
+  s+=" ${C_MAUVE}${C_BOLD}g${C_NOBOLD}${C_TEXT} $L_g $(toggle_dot "$FILTER_ON")"
+  s+="  ${C_MAUVE}${C_BOLD}e${C_NOBOLD}${C_TEXT} $L_e"
+  s+="  ${C_MAUVE}${C_BOLD}s${C_NOBOLD}${C_TEXT} $L_s $(toggle_dot "$BLOCK_ON")"
   if [[ $BLOCK_ON == 1 ]]; then
-    seg_t="${C_MAUVE}<t>${C_TEXT}-Telegram $(bar_stat "$TG_ON")"
+    s+="  ${C_MAUVE}${C_BOLD}t${C_NOBOLD}${C_TEXT} $L_t $(toggle_dot "$TG_ON")"
   else
-    seg_t="${C_OVERLAY}<t>-Telegram Aus"
+    s+="  ${C_OVERLAY}t $L_t ○"
   fi
-  printf '\0337\033[%d;1H\033[2K' "$ROWS"
-  printf '  %b-Gerätefilter %b   %b-Gerätefilter ändern   %b-Sperrliste %b   %b   %b-Hauptmenü%s' \
-    "${C_MAUVE}<g>${C_TEXT}" "$(bar_stat "$FILTER_ON")" \
-    "${C_MAUVE}<e>${C_TEXT}" \
-    "${C_MAUVE}<s>${C_TEXT}" "$(bar_stat "$BLOCK_ON")" \
-    "$seg_t" \
-    "${C_MAUVE}<x>${C_TEXT}" "$C_RESET"
-  printf '\0338'
+  s+="  ${C_MAUVE}${C_BOLD}p${C_NOBOLD}${C_TEXT} $L_p $(toggle_dot "$PAUSED")"
+  s+="  ${C_MAUVE}${C_BOLD}l${C_NOBOLD}${C_TEXT} $L_l $(toggle_dot "$FILE_ON")"
+  s+="  ${C_MAUVE}${C_BOLD}c${C_NOBOLD}${C_TEXT} $L_c"
+  s+="  ${C_MAUVE}${C_BOLD}x${C_NOBOLD}${C_TEXT} $L_x"
+  printf '\033[%d;1H%s\033[K%s' "$ROWS" "$s" "$C_RESET"
 }
 
-msg() { printf '\0337\033[%d;1H\033[2K  %s%s%s\0338' "$((ROWS - 1))" "$C_PEACH" "$1" "$C_RESET"; }
-
-dns_line() {  # ts name ip domain hit(0/1) → farbige Zeile in R_LINE
-  local dc=$C_TEXT
-  [[ $5 == 1 ]] && dc=$C_RED
-  R_LINE="${C_OVERLAY}$1 ${C_SKY}$2 ${C_BLUE}$3 ${dc}$4${C_RESET}"
+draw_rule() {  # Trennlinie mit Filter-/Sperrlisten-Chip
+  local chip
+  if [[ $FILTER_ON == 1 ]]; then chip="📱 ${DEVICE_FILTER_NAMES:-Alle Netzwerkgeräte}"
+  else chip="📱 alle Geräte (Filter aus)"; fi
+  [[ $BLOCK_ON == 1 ]] && chip+="  ·  🚫 nur Sperrliste ($BL_COUNT)"
+  chip+="  ·  $CAPTURE_IFACE"
+  local max=$((COLS - 8))
+  ((${#chip} > max)) && chip="${chip:0:$((max - 1))}…"
+  printf '\033[%d;1H\033[2K %s── %s%s%s ' "$((ROWS - 2))" "$C_OVERLAY" "$C_SKY" "$chip" "$C_OVERLAY"
+  rep "─" $((COLS - ${#chip} - 5))
+  printf '%s' "$C_RESET"
 }
 
-log_push() {  # Zeile an Ringpuffer anhängen, auf LOG_MAX_LINES kappen
+draw_status() {  # Live-/Pin-Status, Sparkline, Zähler, Meldung
+  local st sp="" v max=1 idx sum=0 n=${#BUCKETS[@]} rate i from line
+  if ((RECONNECT)); then st="${C_PEACH}↻ RECONNECT"
+  elif ((LOG_OFF > 0 || PAUSED)); then
+    st="${C_YELLOW}⏸ PAUSE"
+    ((LOG_NEW > 0)) && st+=" ${C_OVERLAY}(+$LOG_NEW neu)"
+    ((LOG_OFF > 0)) && st+=" ${C_OVERLAY}↑$LOG_OFF"
+  else st="${C_GREEN}● LIVE"; fi
+  for v in ${BUCKETS[@]+"${BUCKETS[@]}"}; do ((v > max)) && max=$v; done
+  local sw=24; ((COLS < 100)) && sw=12
+  from=$((n > sw ? n - sw : 0))
+  for ((i = from; i < n; i++)); do
+    v=${BUCKETS[i]}
+    if ((v == 0)); then sp+="${C_OVERLAY}▁"
+    else idx=$((v * 7 / max)); sp+="${C_TEAL}${SPARK[idx]}"; fi
+  done
+  from=$((n > 10 ? n - 10 : 0))
+  for ((i = from; i < n; i++)); do sum=$((sum + BUCKETS[i])); done
+  rate=0; ((n > from)) && rate=$((sum * 10 / (n - from)))
+  line=" $st  $sp  ${C_TEXT}Σ $CNT_TOTAL${C_OVERLAY} · ${C_RED}🚫 $CNT_HIT${C_OVERLAY} · ${C_TEXT}$((rate / 10)).$((rate % 10))/s"
+  local room=$((COLS - sw - 44)) m=$MSG_TEXT
+  if [[ -n $m ]] && ((room > 12)); then
+    ((${#m} > room)) && m="${m:0:$((room - 1))}…"
+    line+="  ${C_PEACH}${m}"
+  fi
+  printf '\033[%d;1H\033[2K%s%s' "$((ROWS - 1))" "$line" "$C_RESET"
+}
+
+msg() { MSG_TEXT=$1; MSG_UNTIL=$((SECONDS + 6)); draw_status; }
+
+fmt_rec() {  # Record (US-getrennt) → R_LINE, passend zur aktuellen Breite
+  local rec=$1 ts name ip d hit rest dc gut dw
+  ts=${rec%%"$US"*}; rest=${rec#*"$US"}
+  name=${rest%%"$US"*}; rest=${rest#*"$US"}
+  ip=${rest%%"$US"*}; rest=${rest#*"$US"}
+  d=${rest%%"$US"*}; hit=${rest#*"$US"}
+  ((${#name} > NAME_W)) && name="${name:0:$((NAME_W - 1))}…"
+  ((${#ip} > IP_W)) && ip="${ip:0:$((IP_W - 1))}…"
+  dw=$((COLS - 13 - NAME_W - IP_W))
+  ((dw < 8)) && dw=8
+  ((${#d} > dw)) && d="${d:0:$((dw - 1))}…"
+  if [[ $hit == 1 ]]; then dc="${C_RED}${C_BOLD}"; gut="${C_RED}▌"; else dc=$C_TEXT; gut=" "; fi
+  R_LINE=" ${gut} ${C_OVERLAY}${ts} ${C_SKY}${name}${SPACES:0:$((NAME_W - ${#name}))} ${C_BLUE}${ip}${SPACES:0:$((IP_W - ${#ip}))} ${dc}${d}${C_RESET}"
+}
+
+log_push() {
   LOG_BUF+=("$1")
-  if ((${#LOG_BUF[@]} > LOG_MAX_LINES)); then
-    # kein negativer Slice-Offset (bash 3.2): positiv berechnen
-    LOG_BUF=("${LOG_BUF[@]:$(( ${#LOG_BUF[@]} - LOG_MAX_LINES ))}")
+  local n=${#LOG_BUF[@]} slack=$((LOG_MAX_LINES / 4 + 16))
+  # in Blöcken kappen statt bei jeder Zeile umzukopieren
+  if ((n > LOG_MAX_LINES + slack)); then
+    LOG_BUF=("${LOG_BUF[@]:$((n - LOG_MAX_LINES))}")
   fi
 }
 
-log_render() {  # Fenster LOG_BUF[n-LOG_OFF-h .. n-LOG_OFF-1] absolut zeichnen
-  # kein trailing \n → die Scroll-Region bleibt unberührt
-  local n=${#LOG_BUF[@]} start i
-  start=$((n - LOG_OFF - LOG_VIEW_H))
-  ((start < 0)) && start=0
+log_render() {  # Fenster absolut zeichnen; SHOWN = belegte Zeilen
+  local n=${#LOG_BUF[@]} start i cnt
+  start=$((n - LOG_OFF - LOG_VIEW_H)); ((start < 0)) && start=0
+  cnt=$((n - LOG_OFF - start)); ((cnt > LOG_VIEW_H)) && cnt=$LOG_VIEW_H
+  ((cnt < 0)) && cnt=0
   for ((i = 0; i < LOG_VIEW_H; i++)); do
     printf '\033[%d;1H\033[2K' $((VIEW_TOP + i))
-    ((start + i < n)) && printf '%s' "${LOG_BUF[start + i]}"
+    if ((i < cnt)); then fmt_rec "${LOG_BUF[start + i]}"; printf '%s' "$R_LINE"; fi
   done
-  printf '\033[%d;1H' "$VIEW_BOT"   # Follow-Ausgabe setzt unten an
+  SHOWN=$cnt
 }
 
-log_scroll() {  # delta > 0 = hoch (ältere), delta < 0 = runter (Richtung Live)
+log_emit() {  # eine neue Zeile im Follow-Modus (absolut positioniert, scrollt am unteren Rand)
+  if ((SHOWN < LOG_VIEW_H)); then
+    printf '\033[%d;1H\033[2K%s' $((VIEW_TOP + SHOWN)) "$R_LINE"
+    SHOWN=$((SHOWN + 1))
+  else
+    printf '\033[%d;1H\n%s' "$VIEW_BOT" "$R_LINE"
+  fi
+}
+
+log_scroll() {  # delta > 0 = ältere Einträge
   local n=${#LOG_BUF[@]} max_off
   max_off=$((n - LOG_VIEW_H)); ((max_off < 0)) && max_off=0
   LOG_OFF=$((LOG_OFF + $1))
   ((LOG_OFF > max_off)) && LOG_OFF=$max_off
   ((LOG_OFF < 0)) && LOG_OFF=0
-  LOG_NEW=0
-  log_render
-  if ((LOG_OFF == 0)); then
-    msg "📡 Live-Ansicht — ↑/↓ PgUp/PgDn = scrollen"
-  else
-    msg "⏸ Angepinnt — $LOG_OFF Einträge über dem Live-Ende · <Ende> = Live-Log"
-  fi
+  if ((LOG_OFF == 0 && $1 < 0)); then LOG_NEW=0; PAUSED=0; fi
+  log_render; draw_status; draw_bar
 }
 
-handle_line() {
-  local ftime fmac fip4 fip6 fnames ts ip name d
-  IFS=';' read -r ftime fmac fip4 fip6 fnames <<< "$1"
-  [[ -z $fnames ]] && return 0
+handle_query() {  # ftime fmac ip4 ip6 names
+  local ftime=$1 fmac=$2 ip=${3:-${4:-}} names=$5 ts name d hit rec
+  [[ -n $names ]] || return 0
   if [[ $FILTER_ON == 1 && $DEVICE_FILTER != ALL ]]; then
-    [[ ,$DEVICE_FILTER, == *,$fmac,* ]] || return 0
+    [[ ,$DEVICE_FILTER, == *",$fmac,"* ]] || return 0
   fi
   ts=$ftime
   [[ $ftime =~ [0-9]{2}:[0-9]{2}:[0-9]{2} ]] && ts=${BASH_REMATCH[0]}
-  name="unbekannt"
-  dev_by_mac "$fmac" && name=${R_NAME:-unbekannt}
-  ip=${fip4:-$fip6}; [[ -z $ip ]] && ip="-"
-  local -a names=()
-  IFS=',' read -r -a names <<< "$fnames"
-  for d in ${names[@]+"${names[@]}"}; do
+  resolve_name "$fmac"; name=$R_NAME
+  [[ -n $ip ]] || ip="-"
+  local IFS=,
+  for d in $names; do
     [[ -z $d ]] && continue
-    local hit=0
+    d=${d%.}
+    # A/AAAA/HTTPS-Bursts derselben Anfrage nur einmal zeigen
+    if ((DEDUPE_SECS > 0)) && seen_within DD_ "${fmac}_$d" "$DEDUPE_SECS"; then continue; fi
+    hit=0
     domain_hit "$d" && hit=1
-    if [[ $BLOCK_ON == 1 ]]; then
-      ((hit == 1)) || continue      # Sperrliste an: nur Treffer anzeigen
-      tg_notify "$name" "$ip" "$d"
+    if [[ $BLOCK_ON == 1 && $hit == 0 ]]; then continue; fi
+    CNT_TOTAL=$((CNT_TOTAL + 1)); CUR_BUCKET=$((CUR_BUCKET + 1))
+    if ((hit)); then
+      CNT_HIT=$((CNT_HIT + 1))
+      if [[ $TG_ON == 1 ]]; then
+        if ((NOTIFY_COOLDOWN == 0)) || ! seen_within NC_ "${fmac}_$d" "$NOTIFY_COOLDOWN"; then
+          tg_send "🚨 lauschbox: Sperrlisten-Treffer
+Gerät: $name ($ip)
+Domain: $d
+Zeit: $ts"
+        fi
+      fi
     fi
-    dns_line "$ts" "$name" "$ip" "$d" "$hit"   # Treffer immer rot markieren
-    log_push "$R_LINE"
-    if ((LOG_OFF == 0)); then
-      printf '%s\n' "$R_LINE"      # Follow-Modus: Region scrollt selbst
+    printf '%s\t%s\t%s\n' "$name" "$d" "$hit" >> "$STATS"
+    ((FILE_ON)) && printf '%s %s %s %s %s%s\n' "$TODAY" "$ts" "$name" "$ip" "$d" "$([[ $hit == 1 ]] && echo ' [TREFFER]')" >> "$LOG_FILE"
+    rec="$ts$US$name$US$ip$US$d$US$hit"
+    log_push "$rec"
+    if ((LOG_OFF > 0 || PAUSED)); then
+      LOG_OFF=$((LOG_OFF + 1)); LOG_NEW=$((LOG_NEW + 1))   # Fenster bleibt stehen
     else
-      LOG_NEW=$((LOG_NEW + 1))     # angepinnt: puffern, Anzeige einfrieren
-      msg "⏸ Angepinnt — $LOG_NEW neue Einträge · <Ende> = Live-Log"
+      fmt_rec "$rec"; log_emit
     fi
   done
 }
 
+view_draw() {  # kompletter Neuaufbau (Start + Resize)
+  layout
+  VIEW_TOP=$((HDR_ROWS + 1)); VIEW_BOT=$((ROWS - 3))
+  LOG_VIEW_H=$((VIEW_BOT - VIEW_TOP + 1)); ((LOG_VIEW_H < 1)) && LOG_VIEW_H=1
+  printf '\033[r\033[H\033[2J'
+  header
+  printf '\033[%d;%dr' "$VIEW_TOP" "$VIEW_BOT"
+  log_render; draw_rule; draw_status; draw_bar
+}
+
+view_setup() {
+  printf '\033[?25l\033[?1000h\033[?1006h'
+  view_draw
+}
+view_teardown() { printf '\033[r\033[?1000l\033[?1006l\033[?25h'; }
+
+reconnect_step() {  # wird pro Tick aufgerufen, solange RECONNECT=1
+  RETRY_IN=$((RETRY_IN - 1))
+  if ((RETRY_IN > 0)); then msg "Verbindung verloren — neuer Versuch in ${RETRY_IN}s"; return; fi
+  msg "Verbindung verloren — melde neu an …"
+  pipeline_stop
+  if fb_login; then
+    capture_stopall
+    pipeline_start
+    RECONNECT=0; ALIVE_TICKS=0
+    msg "✔ Verbindung wiederhergestellt"
+  else
+    BACKOFF=$((BACKOFF * 2)); ((BACKOFF > 60)) && BACKOFF=60
+    RETRY_IN=$BACKOFF
+    msg "Login fehlgeschlagen — nächster Versuch in ${RETRY_IN}s"
+  fi
+}
+
+on_tick() {
+  local sz
+  TICKS=$((TICKS + 1))
+  BUCKETS+=("$CUR_BUCKET"); CUR_BUCKET=0
+  ((${#BUCKETS[@]} > 60)) && BUCKETS=("${BUCKETS[@]:30}")
+  # Resize
+  sz=$(stty size 2>/dev/null </dev/tty) || sz=""
+  if [[ -n $sz && $sz != "$ROWS $COLS" ]]; then view_draw; fi
+  # Capture-Überwachung
+  if ((RECONNECT)); then
+    reconnect_step
+  elif ! pipeline_alive; then
+    RECONNECT=1; RETRY_IN=$BACKOFF
+    msg "Aufzeichnung beendet — Reconnect …"
+  else
+    ALIVE_TICKS=$((ALIVE_TICKS + 1))
+    ((ALIVE_TICKS >= 10)) && BACKOFF=2
+  fi
+  # Geräteliste im Hintergrund auffrischen
+  if [[ -n $DEVREF_PID ]] && ! kill -0 "$DEVREF_PID" 2>/dev/null; then
+    if wait "$DEVREF_PID" 2>/dev/null && [[ -s $TMPD/dev.new ]]; then load_devices "$TMPD/dev.new"; fi
+    DEVREF_PID=""
+  elif [[ -z $DEVREF_PID ]] && ((DEVICE_REFRESH_SECS > 0 && SECONDS - DEV_AT >= DEVICE_REFRESH_SECS)); then
+    DEV_AT=$SECONDS
+    fetch_devices "$TMPD/dev.new" &
+    DEVREF_PID=$!
+  fi
+  ((TICKS % 60 == 0)) && { TODAY=$(date +%F); prune_seen; }
+  if [[ -n $MSG_TEXT ]] && ((SECONDS >= MSG_UNTIL)); then MSG_TEXT=""; fi
+  draw_status
+}
+
+toggle_filter() {
+  if [[ $FILTER_ON == 1 ]]; then FILTER_ON=0; msg "Gerätefilter aus — alle Geräte werden geloggt"
+  else FILTER_ON=1; msg "Gerätefilter an: ${DEVICE_FILTER_NAMES:-Alle Netzwerkgeräte}"; fi
+  draw_rule; draw_bar
+}
+
+toggle_block() {
+  if [[ $BLOCK_ON == 1 ]]; then
+    BLOCK_ON=0; TG_ON=0
+    msg "Sperrliste aus — alle Anfragen werden angezeigt"
+  elif load_blocklist; then
+    BLOCK_ON=1; msg "Sperrliste an ($BL_COUNT Einträge) — nur Treffer werden angezeigt"
+  else
+    msg "⚠ blocklist.txt fehlt oder leer (Hauptmenü → Sperrliste)"
+  fi
+  draw_rule; draw_bar
+}
+
+toggle_pause() {
+  if ((PAUSED || LOG_OFF > 0)); then
+    PAUSED=0; LOG_OFF=0; LOG_NEW=0; log_render; msg "Live-Ansicht"
+  else
+    PAUSED=1; msg "Angehalten — Log läuft im Hintergrund weiter"
+  fi
+  draw_status; draw_bar
+}
+
+toggle_file() {
+  if ((FILE_ON)); then FILE_ON=0; msg "Datei-Log aus"
+  else
+    mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null
+    if : >> "$LOG_FILE" 2>/dev/null; then FILE_ON=1; TODAY=$(date +%F); msg "Datei-Log an → $LOG_FILE"
+    else msg "⚠ $LOG_FILE nicht beschreibbar"; fi
+  fi
+  draw_bar
+}
+
 ui_loop() {
   EVENT=""
-  local line k
-  while IFS= read -r line <&3; do
-    case $line in
-      K\;*)
-        k=${line#K;}
-        case $k in
+  local f1 f2 f3 f4 f5 h
+  while IFS=';' read -r f1 f2 f3 f4 f5 <&3; do
+    case $f1 in
+      T) on_tick ;;
+      K)
+        case $f2 in
           UP)   log_scroll 1 ;;
           DOWN) log_scroll -1 ;;
           PGUP) log_scroll "$LOG_VIEW_H" ;;
           PGDN) log_scroll "-$LOG_VIEW_H" ;;
           HOME) log_scroll "${#LOG_BUF[@]}" ;;
-          END)  log_scroll "-${#LOG_BUF[@]}" ;;
+          END)  PAUSED=0; log_scroll "-${#LOG_BUF[@]}" ;;
           WUP)  log_scroll 3 ;;
           WDN)  log_scroll -3 ;;
-          g)
-            if [[ $FILTER_ON == 1 ]]; then
-              FILTER_ON=0; msg "🔇 Gerätefilter aus — alle Geräte werden geloggt."
-            else
-              FILTER_ON=1; msg "🔎 Gerätefilter an: $DEVICE_FILTER_NAMES"
-            fi
-            draw_bar ;;
+          g) toggle_filter ;;
+          s) toggle_block ;;
+          p) toggle_pause ;;
+          l) toggle_file ;;
+          c)
+            LOG_BUF=(); LOG_OFF=0; LOG_NEW=0; PAUSED=0; : > "$STATS"
+            CNT_TOTAL=0; CNT_HIT=0
+            log_render; draw_status; msg "Puffer und Zähler geleert" ;;
           e) EVENT=e; return ;;
-          s)
-            if [[ $BLOCK_ON == 1 ]]; then
-              BLOCK_ON=0; TG_ON=0
-              msg "🚫 Sperrliste aus — alle DNS-Anfragen werden angezeigt."
-            elif load_blocklist; then
-              BLOCK_ON=1
-              msg "🚫 Sperrliste an (${#BLOCK_ENTRIES[@]} Einträge) — nur Treffer werden angezeigt."
-            else
-              msg "⚠️  blocklist.txt fehlt — Format: eine Domain pro Zeile (s. Hauptmenü → Sperrliste anzeigen)."
-            fi
-            draw_bar ;;
           t)
             if [[ $BLOCK_ON != 1 ]]; then
-              msg "⚠️  Telegram nur bei aktiver Sperrliste (Taste s) möglich."
+              msg "⚠ Telegram nur bei aktiver Sperrliste (Taste s)"
             elif [[ $TG_ON == 1 ]]; then
-              TG_ON=0; draw_bar; msg "✈️  Telegram-Benachrichtigung aus."
+              TG_ON=0; draw_bar; msg "Telegram-Benachrichtigung aus"
             elif load_tg; then
-              TG_ON=1; draw_bar; msg "✈️  Telegram-Benachrichtigung an."
+              TG_ON=1; draw_bar; msg "Telegram-Benachrichtigung an"
             else
               EVENT=t; return
             fi ;;
-          x) EVENT=x; return ;;
+          x|q) EVENT=x; return ;;
         esac ;;
       "") : ;;
-      *) handle_line "$line" ;;
+      *) handle_query "$f1" "$f2" "$f3" "$f4" "$f5" ;;
     esac
   done
-}
-
-view_setup() {
-  local bl
-  ROWS=$(tput lines)
-  bl=$(banner_rows)
-  VIEW_TOP=$((bl + 3)); VIEW_BOT=$((ROWS - 2))
-  LOG_VIEW_H=$((VIEW_BOT - VIEW_TOP + 1))
-  LOG_BUF=(); LOG_OFF=0; LOG_NEW=0
-  screen
-  tput civis 2>/dev/null
-  printf '\033[?1002h\033[?1006h'   # Mausrad-Events (SGR) fürs Scrollen
-  printf '\033[%d;%dr' "$VIEW_TOP" "$VIEW_BOT"
-  printf '\033[%d;1H' "$VIEW_TOP"
-  draw_bar
-  msg "📡 Logging läuft (Interface 1-lan) — Gerätefilter: $DEVICE_FILTER_NAMES · ↑/↓ = scrollen"
-}
-
-# Content-Screens mit langem Inhalt (Listen): Banner oben fixieren,
-# Inhalt scrollt in der Region darunter — gilt für die gesamte Anwendung
-content_region_on() {
-  local bl
-  ROWS=$(tput lines)
-  bl=$(banner_rows)
-  printf '\033[%d;%dr' $((bl + 3)) "$ROWS"
-  printf '\033[%d;1H' $((bl + 3))
-}
-content_region_off() { printf '\033[r'; }
-
-view_teardown() { printf '\033[r\033[?1002l\033[?1006l'; tput cnorm 2>/dev/null; }
-
-abort_logging() {
-  capture_stop
-  capture_stopall
-  printf '\033[r\033[?1002l\033[?1006l'
-  tput cnorm 2>/dev/null
-  clear
-  exit 130
 }
 
 # ---------- Menüpunkt 1: Verbindung Fritzbox ----------
 ui_fritzbox() {
   screen
-  printf '  %s%s🔌 Verbindung Fritzbox%s\n\n' "$C_BOLD" "$C_MAUVE" "$C_RESET"
+  title "🔌 Verbindung Fritzbox"
   if [[ -f $ENV_FB ]]; then
-    confirm_overwrite "$ENV_FB" || return 1
+    confirm "$ENV_FB existiert bereits. Überschreiben?" || return 1
     echo
   fi
-  info "ℹ️  Standard-IP: 192.168.178.1 bzw. fritz.box — entspricht der"
-  info "   Gateway-Adresse deines Rechners (Heimnetz → Netzwerk im Webinterface)."
+  info "ℹ️  Standard-IP: 192.168.178.1 bzw. fritz.box — entspricht dem Gateway"
+  info "   deines Rechners (Heimnetz → Netzwerk im Webinterface)."
   ask FB_IP "${C_TEXT}IP-Adresse der Fritzbox${C_RESET}"
-  [[ -z $FB_IP ]] && { warn "Abgebrochen — keine IP eingegeben."; keypress; return 1; }
+  [[ -z $FB_IP ]] && { warn "Abgebrochen — keine IP eingegeben."; anykey; return 1; }
   echo
-  info "ℹ️  FRITZ!Box-Benutzer (nicht „nur Kennwort“). Anlegen im Webinterface:"
-  info "   System → FRITZ!Box-Benutzer → Benutzer hinzufügen (Recht „FRITZ!Box"
-  info "   Einstellungen“). Außerdem: Heimnetz → Netzwerk → Netzwerkeinstellungen"
-  info "   → „Zugriff für Anwendungen zulassen“ aktivieren (TR-064)."
+  info "ℹ️  FRITZ!Box-Benutzer (nicht „nur Kennwort“). System → FRITZ!Box-Benutzer,"
+  info "   Recht „FRITZ!Box Einstellungen“. Zusätzlich: Heimnetz → Netzwerk →"
+  info "   Netzwerkeinstellungen → „Zugriff für Anwendungen zulassen“ (TR-064)."
   ask FB_USER "${C_TEXT}Nutzername${C_RESET}"
-  [[ -z $FB_USER ]] && { warn "Abgebrochen — kein Nutzername eingegeben."; keypress; return 1; }
+  [[ -z $FB_USER ]] && { warn "Abgebrochen — kein Nutzername eingegeben."; anykey; return 1; }
   echo
   info "ℹ️  Passwort des FRITZ!Box-Benutzers (Eingabe verdeckt)."
   ask FB_PASS "${C_TEXT}Passwort${C_RESET}" secret
-  [[ -z $FB_PASS ]] && { warn "Abgebrochen — kein Passwort eingegeben."; keypress; return 1; }
+  [[ -z $FB_PASS ]] && { warn "Abgebrochen — kein Passwort eingegeben."; anykey; return 1; }
   save_fb
   echo
-  ok "✅ Gespeichert in $ENV_FB"
-  keypress
+  ok "✔ Gespeichert in $ENV_FB"
+  step "Teste Login"
+  if fb_login; then step_ok "Login erfolgreich"
+  else step_fail "Login fehlgeschlagen — Zugangsdaten / Benutzerrecht / BlockTime prüfen"; fi
+  anykey
   return 0
 }
 
 # ---------- Menüpunkt 2: Verbindung Telegram ----------
 ui_telegram() {
   screen
-  printf '  %s%s✈️  Verbindung Telegram%s\n\n' "$C_BOLD" "$C_MAUVE" "$C_RESET"
+  title "✈️  Verbindung Telegram"
   if [[ -f $ENV_TG ]]; then
-    confirm_overwrite "$ENV_TG" || return 1
+    confirm "$ENV_TG existiert bereits. Überschreiben?" || return 1
     echo
   fi
-  info "ℹ️  Bot-Token vom @BotFather in Telegram: /newbot → Namen vergeben →"
-  info "   Token im Format 123456789:AA… wird ausgegeben. Wichtig: Den Bot"
-  info "   einmal per /start kontaktieren, sonst kann er dir nicht schreiben."
-  ask TG_TOKEN "${C_TEXT}Bot-Token${C_RESET}"
-  [[ -z $TG_TOKEN ]] && { warn "Abgebrochen — kein Token eingegeben."; keypress; return 1; }
+  info "ℹ️  Bot-Token vom @BotFather: /newbot → Namen vergeben → Token"
+  info "   (Format 123456789:AA…). Den Bot einmal per /start kontaktieren!"
+  ask TG_TOKEN "${C_TEXT}Bot-Token${C_RESET}" secret
+  [[ -z $TG_TOKEN ]] && { warn "Abgebrochen — kein Token eingegeben."; anykey; return 1; }
   echo
-  info "ℹ️  Chat-ID des Empfängers. Eigene User-ID: @userinfobot anschreiben —"
-  info "   die Antwort enthält die ID. Alternativ: dem eigenen Bot eine Nachricht"
-  info "   schicken, dann https://api.telegram.org/bot<TOKEN>/getUpdates →"
-  info "   result[].message.chat.id. Gruppen haben negative IDs (Bot muss Mitglied sein)."
+  info "ℹ️  Chat-ID: @userinfobot anschreiben — oder dem Bot schreiben und"
+  info "   https://api.telegram.org/bot<TOKEN>/getUpdates → result[].message.chat.id."
+  info "   Gruppen haben negative IDs (Bot muss Mitglied sein)."
   ask TG_CHAT_ID "${C_TEXT}Chat-ID${C_RESET}"
-  [[ -z $TG_CHAT_ID ]] && { warn "Abgebrochen — keine Chat-ID eingegeben."; keypress; return 1; }
+  [[ -z $TG_CHAT_ID ]] && { warn "Abgebrochen — keine Chat-ID eingegeben."; anykey; return 1; }
   save_tg
   echo
-  ok "✅ Gespeichert in $ENV_TG"
-  keypress
+  ok "✔ Gespeichert in $ENV_TG"
+  step "Sende Testnachricht"
+  if tg_test; then step_ok "Testnachricht zugestellt"
+  else step_fail "Telegram lehnt ab: $R_NAME"; fi
+  anykey
   return 0
 }
 
-# ---------- Menüpunkt 3: Gerätefilter ----------
+# ---------- Menüpunkt 3: Gerätefilter (Checkbox-Liste) ----------
 ui_devices() {
   if ! load_fb; then
-    screen
-    printf '  %s%s📱 Gerätefilter%s\n\n' "$C_BOLD" "$C_MAUVE" "$C_RESET"
+    screen; title "📱 Gerätefilter"
     warn "Keine Fritzbox-Verbindung konfiguriert — bitte zuerst einrichten."
-    keypress
+    anykey
     ui_fritzbox || return 1
     load_fb || return 1
   fi
-  screen
-  printf '  %s%s📱 Gerätefilter%s\n\n' "$C_BOLD" "$C_MAUVE" "$C_RESET"
-  info "🔄 Lade Geräteliste von der Fritzbox ($FB_IP) …"
-  if ! fetch_devices; then
-    err "❌ Geräteliste konnte nicht geladen werden (Zugangsdaten / TR-064 prüfen)."
-    keypress; return 1
+  screen; title "📱 Gerätefilter"
+  step "Lade Geräteliste von $FB_IP"
+  if ! fetch_devices "$TMPD/dev.tsv"; then
+    step_fail "Geräteliste nicht ladbar (Zugangsdaten / TR-064 prüfen)"
+    anykey; return 1
   fi
-  printf '\r\033[2K'
-  if ((DEV_COUNT == 0)); then
-    warn "Keine verbundenen Geräte gefunden."
-    keypress; return 1
-  fi
-  content_region_on
-  if load_filter; then
-    printf '  Aktueller Filter: %s%s%s\n\n' "$C_SKY" "$DEVICE_FILTER_NAMES" "$C_RESET"
-  fi
-  local i icon it
+  load_devices "$TMPD/dev.tsv"
+  if ((DEV_COUNT == 0)); then step_fail "Keine Geräte gefunden"; anykey; return 1; fi
+  step_ok "$DEV_COUNT Geräte geladen"
+
+  local -a chk=()
+  local i cur=0 off=0 top h nsel k icon line nm dot cb mark ipd
+  load_filter || true
   for ((i = 0; i < DEV_COUNT; i++)); do
-    it=${DEV_IF[$i]}
-    icon='🔗'
-    [[ $it == 802.11 ]] && icon='📶'
-    [[ $it == Ethernet ]] && icon='🔌'
-    printf '  %s%2d)%s %s %s%-28s%s %s%-15s%s %s%s%s\n' \
-      "$C_MAUVE" "$((i + 1))" "$C_RESET" "$icon" \
-      "$C_SKY" "${DEV_NAME[$i]:-(ohne Namen)}" "$C_RESET" \
-      "$C_BLUE" "${DEV_IP[$i]:--}" "$C_RESET" \
-      "$C_OVERLAY" "${DEV_MAC[$i]}" "$C_RESET"
+    chk[i]=0
+    [[ $DEVICE_FILTER != ALL && ,$DEVICE_FILTER, == *",${DEV_MAC[i]},"* ]] && chk[i]=1
   done
-  echo
-  printf '  %s a)%s 🌐 Alle Netzwerkgeräte (Auswahl zurücksetzen)\n\n' "$C_MAUVE" "$C_RESET"
-  local sel
-  ask sel "${C_TEXT}Auswahl — Nummern mit Leerzeichen (z.B. 1 3), a = alle, leer = Abbrechen${C_RESET}"
-  if [[ -z $sel ]]; then
-    content_region_off
-    return 1
-  fi
-  local rc=0
-  if [[ $sel == a ]]; then
-    DEVICE_FILTER="ALL"
-    DEVICE_FILTER_NAMES="Alle Netzwerkgeräte"
-  else
-    local okflag=1 w idx
-    local -a macs=() names=()
-    for w in $sel; do
-      if [[ $w =~ ^[0-9]+$ ]] && ((w >= 1 && w <= DEV_COUNT)); then
-        idx=$((w - 1))
-        macs+=("${DEV_MAC[$idx]}")
-        names+=("${DEV_NAME[$idx]:-unbekannt}")
-      else
-        okflag=0; break
-      fi
+  layout
+  top=$((HDR_ROWS + 4)); h=$((ROWS - top - 1)); ((h < 3)) && h=3
+  printf '\033[%d;1H\033[2K  %sLeertaste%s wählen · %sa%s alle Geräte · %sn%s keine · %sEnter%s speichern · %sq%s abbrechen' \
+    "$((HDR_ROWS + 3))" "$C_MAUVE" "$C_OVERLAY" "$C_MAUVE" "$C_OVERLAY" "$C_MAUVE" "$C_OVERLAY" "$C_MAUVE" "$C_OVERLAY" "$C_MAUVE" "$C_OVERLAY"
+  printf '\033[?25l\033[?1000h\033[?1006h'
+  while true; do
+    ((cur < off)) && off=$cur
+    ((cur >= off + h)) && off=$((cur - h + 1))
+    nsel=0; for ((i = 0; i < DEV_COUNT; i++)); do ((chk[i])) && nsel=$((nsel + 1)); done
+    for ((i = 0; i < h; i++)); do
+      k=$((off + i))
+      printf '\033[%d;1H\033[2K' $((top + i))
+      ((k < DEV_COUNT)) || continue
+      icon='🔗'
+      case ${DEV_IF[k]} in 802.11) icon='📶' ;; Ethernet) icon='🔌' ;; esac
+      [[ ${DEV_GUEST[k]} == 1 ]] && icon='👥'
+      nm=${DEV_NAME[k]:-(ohne Namen)}
+      ((${#nm} > 26)) && nm="${nm:0:25}…"
+      if [[ ${DEV_ACT[k]} == 1 ]]; then dot="${C_GREEN}●"; else dot="${C_OVERLAY}○"; fi
+      if ((chk[k])); then cb="${C_GREEN}[✔]"; else cb="${C_OVERLAY}[ ]"; fi
+      if ((k == cur)); then mark="${C_SEL}${C_MAUVE}▸"; else mark=" "; fi
+      line="$mark $cb $dot $icon "
+      if [[ ${DEV_ACT[k]} == 1 ]]; then line+="${C_SKY}"; else line+="${C_OVERLAY}"; fi
+      ipd=${DEV_IP[k]:--}
+      line+="$nm${SPACES:0:$((26 - ${#nm}))} ${C_BLUE}${ipd}${SPACES:0:$((15 - ${#ipd}))} ${C_OVERLAY}${DEV_MAC[k]}"
+      printf '  %s' "$line"
+      ((k == cur)) && printf '\033[K'
+      printf '%s' "$C_RESET"
     done
-    if ((okflag == 0)) || ((${#macs[@]} == 0)); then
-      err "❌ Ungültige Auswahl: $sel"
-      rc=1
-    else
-      DEVICE_FILTER=$(IFS=,; printf '%s' "${macs[*]}")
-      DEVICE_FILTER_NAMES=$(IFS=,; printf '%s' "${names[*]}")
+    printf '\033[%d;1H\033[2K  %s%d von %d ausgewählt%s' "$ROWS" "$C_OVERLAY" "$nsel" "$DEV_COUNT" "$C_RESET"
+    ((nsel == 0)) && printf '%s — ohne Auswahl: Alle Netzwerkgeräte%s' "$C_OVERLAY" "$C_RESET"
+    ((DEV_COUNT > h)) && printf '%s · ↑/↓ PgUp/PgDn scrollen%s' "$C_OVERLAY" "$C_RESET"
+    read_key || break
+    case $R_KEY in
+      UP)   cur=$((cur - 1)) ;;
+      DOWN) cur=$((cur + 1)) ;;
+      PGUP) cur=$((cur - h)) ;;
+      PGDN) cur=$((cur + h)) ;;
+      HOME) cur=0 ;;
+      END)  cur=$((DEV_COUNT - 1)) ;;
+      WUP)  cur=$((cur - 3)) ;;
+      WDN)  cur=$((cur + 3)) ;;
+      " ")  chk[cur]=$((1 - chk[cur])) ;;
+      a)    for ((i = 0; i < DEV_COUNT; i++)); do chk[i]=0; done; nsel=0; break ;;
+      n)    for ((i = 0; i < DEV_COUNT; i++)); do chk[i]=0; done ;;
+      "")   break ;;
+      q|ESC)
+        printf '\033[?25h\033[?1000l\033[?1006l'
+        return 1 ;;
+    esac
+    ((cur < 0)) && cur=0
+    ((cur >= DEV_COUNT)) && cur=$((DEV_COUNT - 1))
+  done
+  printf '\033[?25h\033[?1000l\033[?1006l'
+  local macs="" names=""
+  nsel=0
+  for ((i = 0; i < DEV_COUNT; i++)); do
+    if ((chk[i])); then
+      macs+="${macs:+,}${DEV_MAC[i]}"
+      names+="${names:+, }${DEV_NAME[i]:-${DEV_MAC[i]}}"
+      nsel=$((nsel + 1))
     fi
-  fi
-  if ((rc == 0)); then
-    save_filter
-    echo
-    ok "✅ Gerätefilter gespeichert: $DEVICE_FILTER_NAMES"
-  fi
-  keypress
-  content_region_off
-  return $rc
+  done
+  if ((nsel == 0)); then DEVICE_FILTER="ALL"; DEVICE_FILTER_NAMES="Alle Netzwerkgeräte"
+  else DEVICE_FILTER=$macs; DEVICE_FILTER_NAMES=$names; fi
+  save_filter
+  printf '\033[%d;1H\033[2K  %s✔ Gerätefilter gespeichert: %s%s' "$ROWS" "$C_GREEN" "$DEVICE_FILTER_NAMES" "$C_RESET"
+  sleep 1
+  return 0
 }
 
 # ---------- Menüpunkt 4: DNS Logging ----------
 ui_logging() {
   if ! load_fb; then
-    screen
-    printf '  %s%s📡 DNS Logging%s\n\n' "$C_BOLD" "$C_MAUVE" "$C_RESET"
+    screen; title "📡 DNS Logging"
     warn "Keine Fritzbox-Verbindung konfiguriert — bitte zuerst einrichten."
-    keypress
+    anykey
     ui_fritzbox || return 1
     load_fb || return 1
   fi
   if ! load_filter; then
-    screen
-    printf '  %s%s📡 DNS Logging%s\n\n' "$C_BOLD" "$C_MAUVE" "$C_RESET"
+    screen; title "📡 DNS Logging"
     info "Noch kein Gerätefilter definiert — bitte Geräte auswählen."
-    keypress
+    anykey
     ui_devices || { load_filter || return 1; }
   fi
-  screen
-  printf '  %s%s📡 DNS Logging%s\n\n' "$C_BOLD" "$C_MAUVE" "$C_RESET"
-  info "🔐 Login an Fritzbox ($FB_IP) …"
-  if ! fb_login; then
-    err "❌ Login fehlgeschlagen — Zugangsdaten prüfen (BlockTime beachten!)."
-    keypress; return 1
+  screen; title "📡 DNS Logging"
+  step "Login und Geräteliste (parallel)"
+  fb_login_raw > "$TMPD/sid" &
+  local p1=$!
+  fetch_devices "$TMPD/dev.tsv" &
+  local p2=$! dev_ok=1
+  wait "$p1" 2>/dev/null
+  wait "$p2" 2>/dev/null || dev_ok=0
+  SID=$(<"$TMPD/sid")
+  if [[ -z $SID || $SID == "0000000000000000" ]]; then
+    step_fail "Login fehlgeschlagen — Zugangsdaten prüfen (BlockTime beachten!)"
+    anykey; return 1
   fi
-  info "🧹 Beende verwaiste Aufzeichnungen …"
+  step_ok "Login an $FB_IP erfolgreich"
+  if ((dev_ok)); then load_devices "$TMPD/dev.tsv"; step_ok "$DEV_COUNT Geräte für die Namensauflösung"
+  else warn "⚠️  Geräteliste nicht ladbar — Gerätenamen können fehlen."; fi
+  step "Beende verwaiste Aufzeichnungen"
   capture_stopall
-  info "🔄 Lade Geräteliste zur Namensauflösung …"
-  fetch_devices || warn "⚠️  Geräteliste nicht ladbar — Gerätenamen können fehlen."
-  FILTER_ON=1; BLOCK_ON=0; TG_ON=0
+  step_ok "Aufzeichnung auf ${CAPTURE_IFACE} bereit"
+
+  FILTER_ON=1; BLOCK_ON=0; TG_ON=0; PAUSED=0
+  LOG_BUF=(); LOG_OFF=0; LOG_NEW=0; SHOWN=0
+  RECONNECT=0; BACKOFF=2; BUCKETS=(); CUR_BUCKET=0
+  TODAY=$(date +%F)
   load_blocklist || true
   load_tg || true
-  trap 'abort_logging' INT TERM
   local ev
   while true; do
+    session_start
     view_setup
-    capture_start
+    msg "Logging läuft — ↑/↓/Mausrad scrollen · p Pause"
     ui_loop
     ev=$EVENT
-    capture_stop
+    session_stop
     view_teardown
     case $ev in
-      x)
-        capture_stopall
-        trap - INT TERM
-        return 0 ;;
-      e)
-        ui_devices && { load_filter; FILTER_ON=1; fetch_devices || true; } ;;
-      t)
-        ui_telegram
-        if load_tg; then TG_ON=1; else TG_ON=0; fi ;;
-      *)
-        # Unerwarteter Rücksprung (z.B. FIFO zu): zurück zum Hauptmenü
-        capture_stopall
-        trap - INT TERM
-        return 0 ;;
+      e) ui_devices && { load_filter; FILTER_ON=1; } ;;
+      t) ui_telegram; if load_tg; then TG_ON=1; else TG_ON=0; fi ;;
+      *) capture_stopall; return 0 ;;
     esac
   done
 }
 
 # ---------- Menüpunkt 5: Sperrliste anzeigen ----------
 ui_blocklist() {
-  screen
-  printf '  %s%s🚫 Sperrliste%s\n\n' "$C_BOLD" "$C_MAUVE" "$C_RESET"
+  screen; title "🚫 Sperrliste"
   if [[ ! -f $BLOCKLIST_FILE ]]; then
-    blocklist_help
-    keypress "Enter = zurück zum Hauptmenü"
-    return 0
+    blocklist_help; anykey "Taste = zurück zum Hauptmenü"; return 0
   fi
   local -a lines=()
   local l truncated=0
@@ -849,84 +1175,146 @@ ui_blocklist() {
     lines+=("$l")
   done < "$BLOCKLIST_FILE"
   local total=${#lines[@]}
-  if ((total == 0)); then
-    warn "(Datei ist leer)"
-    keypress "Enter = zurück zum Hauptmenü"
-    return 0
-  fi
-  local bl top h off i idx max_off footer
-  ROWS=$(tput lines)
-  bl=$(banner_rows)
-  top=$((bl + 3))
-  h=$((ROWS - top - 1))        # letzte Bildschirmzeile = statischer Footer
-  ((h < 1)) && h=1
-  off=0
-  printf '\033[?1002h\033[?1006h'   # Mausrad-Events (SGR) fürs Scrollen
-  # Banner (oberhalb top) und Footer (Zeile ROWS) bleiben statisch;
-  # die Einträge werden absolut positioniert — kein \n, kein Scrollen
+  if ((total == 0)); then warn "(Datei ist leer)"; anykey "Taste = zurück zum Hauptmenü"; return 0; fi
+  local top h off=0 i idx max_off footer num
+  top=$((HDR_ROWS + 3)); h=$((ROWS - top - 1)); ((h < 1)) && h=1
+  printf '\033[%d;1H\033[2K  %s%s%s' "$((HDR_ROWS + 1))" "$C_OVERLAY" "$BLOCKLIST_FILE" "$C_RESET"
+  printf '\033[?25l\033[?1000h\033[?1006h'
   while true; do
     for ((i = 0; i < h; i++)); do
       idx=$((off + i))
       printf '\033[%d;1H\033[2K' $((top + i))
       if ((idx < total)); then
-        printf '  %s%3d.%s %s%s%s' "$C_MAUVE" $((idx + 1)) "$C_RESET" "$C_TEXT" "${lines[idx]}" "$C_RESET"
+        l=${lines[idx]}
+        if [[ $l == \#* || -z ${l//[[:space:]]/} ]]; then
+          printf '  %s%4d  %s%s' "$C_OVERLAY" $((idx + 1)) "$l" "$C_RESET"
+        else
+          printf '  %s%4d%s  %s%s%s' "$C_MAUVE" $((idx + 1)) "$C_RESET" "$C_TEXT" "$l" "$C_RESET"
+        fi
       fi
     done
-    footer="↑/↓ PgUp/PgDn Home/Ende = scrollen · Enter/q = zurück · $total Einträge"
-    ((truncated == 1)) && footer="$footer · ⚠️ Anzeige auf $BLOCKLIST_MAX_LINES Zeilen begrenzt (lauschbox.env)"
+    footer="↑/↓ PgUp/PgDn Home/Ende scrollen · q = zurück · $total Zeilen"
+    ((truncated == 1)) && footer+=" · ⚠️ auf $BLOCKLIST_MAX_LINES begrenzt (lauschbox.env)"
     printf '\033[%d;1H\033[2K  %s%s%s' "$ROWS" "$C_OVERLAY" "$footer" "$C_RESET"
     read_key || break
     case $R_KEY in
-      UP)   off=$((off - 1)) ;;
-      DOWN) off=$((off + 1)) ;;
-      PGUP) off=$((off - h)) ;;
-      PGDN) off=$((off + h)) ;;
-      HOME) off=0 ;;
-      END)  off=$((total - h)) ;;
-      WUP)  off=$((off - 3)) ;;
-      WDN)  off=$((off + 3)) ;;
-      ESC|q|x) break ;;
-      "")   break ;;          # Enter
-      NONE) continue ;;
+      UP) off=$((off - 1)) ;;   DOWN) off=$((off + 1)) ;;
+      PGUP) off=$((off - h)) ;; PGDN) off=$((off + h)) ;;
+      HOME) off=0 ;;            END) off=$((total - h)) ;;
+      WUP) off=$((off - 3)) ;;  WDN) off=$((off + 3)) ;;
+      ESC|q|x|"") break ;;
     esac
     max_off=$((total - h)); ((max_off < 0)) && max_off=0
     ((off < 0)) && off=0
     ((off > max_off)) && off=$max_off
   done
-  printf '\033[?1002l\033[?1006l\033[r'
+  printf '\033[?25h\033[?1000l\033[?1006l'
+}
+
+# ---------- Menüpunkt 6: Statistik ----------
+ui_stats() {
+  screen; title "📊 Statistik (diese Sitzung)"
+  if [[ ! -s $STATS ]]; then
+    info "Noch keine Daten — starte zuerst DNS Logging."
+    anykey "Taste = zurück zum Hauptmenü"; return 0
+  fi
+  local total hits topn c n max bar w
+  total=$(wc -l < "$STATS" | tr -d ' ')
+  hits=$(awk -F'\t' '$3 == 1' "$STATS" | wc -l | tr -d ' ')
+  printf '  %s%s%s Anfragen · %s%s%s Treffer · %s%s%s Geräte · %s%s%s Domains\n' \
+    "$C_TEXT" "$total" "$C_OVERLAY" "$C_RED" "$hits" "$C_OVERLAY" \
+    "$C_SKY" "$(cut -f1 "$STATS" | sort -u | wc -l | tr -d ' ')" "$C_OVERLAY" \
+    "$C_BLUE" "$(cut -f2 "$STATS" | sort -u | wc -l | tr -d ' ')" "$C_RESET"
+  topn=$(((ROWS - HDR_ROWS - 12) / 3)); ((topn < 3)) && topn=3; ((topn > 8)) && topn=8
+  w=$((COLS / 4)); ((w > 30)) && w=30; ((w < 6)) && w=6
+  local sect col color label filt
+  for sect in "2:Top Domains:$C_BLUE:all" "1:Aktivste Geräte:$C_SKY:all" "2:Sperrlisten-Treffer:$C_RED:hit"; do
+    IFS=: read -r col label color filt <<< "$sect"
+    printf '\n  %s%s%s\n' "$C_MAUVE" "$label" "$C_RESET"
+    max=0
+    local out
+    if [[ $filt == hit ]]; then
+      out=$(awk -F'\t' '$3 == 1 { print $2 }' "$STATS" | sort | uniq -c | sort -rn | head -n "$topn")
+    else
+      out=$(cut -f"$col" "$STATS" | sort | uniq -c | sort -rn | head -n "$topn")
+    fi
+    if [[ -z $out ]]; then printf '  %s—%s\n' "$C_OVERLAY" "$C_RESET"; continue; fi
+    while read -r c n; do
+      ((max == 0)) && max=$c
+      bar=$(rep "█" $(( (c * w + max - 1) / max )))
+      printf '  %s%6d%s %s%s%s %s%s%s\n' "$C_TEXT" "$c" "$C_RESET" "$color" "$bar" "$C_RESET" "$C_TEXT" "${n:0:$((COLS - w - 14))}" "$C_RESET"
+    done <<< "$out"
+  done
+  anykey "Taste = zurück zum Hauptmenü"
 }
 
 # ---------- Hauptmenü ----------
+MENU_LABELS=("🔌  Verbindung Fritzbox" "✈️   Verbindung Telegram" "📱  Gerätefilter" "📡  DNS Logging" "🚫  Sperrliste anzeigen" "📊  Statistik" "👋  Ende")
+
+menu_dashboard() {  # Statuszeilen
+  local fbs tgs fs bls
+  if load_fb; then fbs="${C_GREEN}● ${C_TEXT}$FB_IP ${C_OVERLAY}($FB_USER)"; else fbs="${C_RED}○ ${C_OVERLAY}nicht konfiguriert"; fi
+  if load_tg; then tgs="${C_GREEN}● ${C_TEXT}konfiguriert"; else tgs="${C_RED}○ ${C_OVERLAY}nicht konfiguriert"; fi
+  if load_filter; then fs="${C_SKY}${DEVICE_FILTER_NAMES}"; else fs="${C_OVERLAY}noch nicht gewählt"; fi
+  if load_blocklist; then bls="${C_GREEN}● ${C_TEXT}${BL_COUNT} Domains"; else bls="${C_RED}○ ${C_OVERLAY}keine blocklist.txt"; fi
+  DASH_1="  ${C_OVERLAY}Fritzbox    $fbs"
+  DASH_2="  ${C_OVERLAY}Telegram    $tgs"
+  DASH_3="  ${C_OVERLAY}Filter      $fs"
+  DASH_4="  ${C_OVERLAY}Sperrliste  $bls"
+}
+
+menu_draw() {  # menu_draw AUSWAHL
+  local i n=${#MENU_LABELS[@]} row=$((HDR_ROWS + 1))
+  printf '\033[%d;1H' "$row"
+  printf '%s\033[K%s\n%s\033[K%s\n%s\033[K%s\n%s\033[K%s\n\033[K\n' \
+    "$DASH_1" "$C_RESET" "$DASH_2" "$C_RESET" "$DASH_3" "$C_RESET" "$DASH_4" "$C_RESET"
+  for ((i = 0; i < n; i++)); do
+    if ((i == $1)); then
+      printf '  %s%s ▸ %s%d%s  %s%s%s\033[K%s\n' "$C_SEL" "$C_MAUVE" "$C_BOLD" "$((i + 1))" "$C_NOBOLD" "$C_TEXT" "${MENU_LABELS[i]}" "" "$C_RESET"
+    else
+      printf '  %s   %d%s  %s%s\033[K\n' "$C_OVERLAY" "$((i + 1))" "$C_RESET" "$C_TEXT" "${MENU_LABELS[i]}"
+    fi
+  done
+  printf '%s\033[K\n  %s↑/↓ wählen · Enter öffnen · 1-%d direkt · q Ende%s\033[K' "$C_RESET" "$C_OVERLAY" "$n" "$C_RESET"
+}
+
+menu_run() {
+  printf '\033[?1000l\033[?1006l'
+  case $1 in
+    0) ui_fritzbox ;;
+    1) ui_telegram ;;
+    2) ui_devices ;;
+    3) ui_logging ;;
+    4) ui_blocklist ;;
+    5) ui_stats ;;
+    6) exit 0 ;;
+  esac
+  return 0
+}
+
 main_menu() {
-  local k fbs tgs
+  local sel=0 n=${#MENU_LABELS[@]} redraw=1
+  load_fb && sel=3
   while true; do
-    screen
-    if [[ -f $ENV_FB ]]; then fbs="${C_GREEN}konfiguriert ✅${C_RESET}"; else fbs="${C_RED}nicht konfiguriert ❌${C_RESET}"; fi
-    if [[ -f $ENV_TG ]]; then tgs="${C_GREEN}konfiguriert ✅${C_RESET}"; else tgs="${C_RED}nicht konfiguriert ❌${C_RESET}"; fi
-    printf '  %sFritzbox:%s %b   %sTelegram:%s %b\n\n' "$C_TEXT" "$C_RESET" "$fbs" "$C_TEXT" "$C_RESET" "$tgs"
-    printf '  %s[1]%s 🔌 Verbindung Fritzbox\n'  "$C_MAUVE" "$C_TEXT"
-    printf '  %s[2]%s ✈️  Verbindung Telegram\n'  "$C_MAUVE" "$C_TEXT"
-    printf '  %s[3]%s 📱 Gerätefilter\n'          "$C_MAUVE" "$C_TEXT"
-    printf '  %s[4]%s 📡 DNS Logging\n'           "$C_MAUVE" "$C_TEXT"
-    printf '  %s[5]%s 🚫 Sperrliste anzeigen\n'   "$C_MAUVE" "$C_TEXT"
-    printf '  %s[6]%s 👋 Ende%s\n\n'              "$C_MAUVE" "$C_TEXT" "$C_RESET"
-    printf '  %sAuswahl [1-6] + Enter:%s ' "$C_OVERLAY" "$C_RESET"
-    k=""
-    IFS= read -r k || { clear; exit 0; }
-    k=${k:0:1}
-    case $k in
-      1) ui_fritzbox ;;
-      2) ui_telegram ;;
-      3) ui_devices ;;
-      4) ui_logging ;;
-      5) ui_blocklist ;;
-      6) clear; exit 0 ;;
+    if ((redraw)); then screen; menu_dashboard; redraw=0; fi
+    menu_draw "$sel"
+    read_key || exit 0
+    case $R_KEY in
+      UP)   sel=$(((sel + n - 1) % n)) ;;
+      DOWN) sel=$(((sel + 1) % n)) ;;
+      HOME) sel=0 ;;
+      END)  sel=$((n - 1)) ;;
+      [1-9]) if ((R_KEY <= n)); then sel=$((R_KEY - 1)); menu_run "$sel"; redraw=1; fi ;;
+      "")   menu_run "$sel"; redraw=1 ;;
+      q)    exit 0 ;;
     esac
   done
 }
 
 # ---------- Start ----------
-clear
-restore_tty   # ggf. geerbten korrupten Terminalzustand sofort heilen
 check_deps
+restore_tty
+build_banner
+printf '\033[?1049h'   # Alt-Screen: Shell-Scrollback bleibt unberührt
+if ((AUTOSTART)); then ui_logging; fi
 main_menu

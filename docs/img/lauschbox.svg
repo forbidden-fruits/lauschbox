@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>lauschbox</title>
+  <defs>
+    <linearGradient id="g" gradientUnits="userSpaceOnUse" x1="260" y1="240" x2="760" y2="790">
+      <stop offset="0" stop-color="#c6a0f6"/>
+      <stop offset="1" stop-color="#91d7e3"/>
+    </linearGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2e45"/>
+      <stop offset="1" stop-color="#1e2030"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+  <g fill="none" stroke="url(#g)" stroke-width="60" stroke-linecap="round">
+    <path d="M616.1 423.9 A115 115 0 0 0 616.1 600.1"/>
+    <path d="M532.5 324.3 A245 245 0 0 0 532.5 699.7" opacity=".85"/>
+    <path d="M449.0 224.7 A375 375 0 0 0 449.0 799.3" opacity=".62"/>
+  </g>
+  <rect x="668" y="407" width="80" height="210" rx="22" fill="url(#g)"/>
+</svg>
