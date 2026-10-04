@@ -16,6 +16,7 @@ Box installiert.
 - ✈️ **Telegram:** Push bei jedem Treffer (mit Cooldown gegen Flut)
 - 📊 **Statistik:** Top-Domains, aktivste Geräte, Treffer
 - 📝 **Datei-Log:** Mitschnitt per Tastendruck in eine Textdatei
+- 🌐 **Web-UI:** Schalter, Geräteauswahl und Live-Log im Browser (Taste `w`, auch mobil)
 - 🎨 Catppuccin-Macchiato-Farben, passt sich der Terminalgröße an
 
 ## Screenshots
@@ -43,9 +44,10 @@ Hauptmenü:
      5  🚫  Sperrliste anzeigen
      6  📊  Statistik
      7  📝  Logdatei Pfad
-     8  👋  Ende
+     8  🌐  Web-UI Port
+     9  👋  Ende
 
-  ↑/↓ wählen · Enter öffnen · 1-8 direkt · q Ende
+  ↑/↓ wählen · Enter öffnen · 1-9 direkt · q Ende
 ```
 
 DNS-Logging (Treffer der Sperrliste mit rotem `▌` am Rand):
@@ -59,7 +61,7 @@ DNS-Logging (Treffer der Sperrliste mit rotem `▌` am Rand):
 
  ── 📱 iPhone, Mac  ·  1-lan ─────────────────────────────────────────────
  ● LIVE  ▁▁▁▁▁▁▁█▁▁▆  Σ 9 · 🚫 1 · 0.9/s
- g Gerätefilter ●  e ändern  s Sperrliste ○  t Telegram ○  p Pause ○  l Datei ○  c leeren  x Menü
+ g Gerätefilter ●  e ändern  s Sperrliste ○  t Telegram ○  p Pause ○  l Datei ○  w Web ○  c leeren  x Menü
 ```
 
 ## Voraussetzungen
@@ -132,7 +134,7 @@ lauschbox braucht ein interaktives Terminal (TTY).
 
 ### Hauptmenü
 
-Auswahl mit `↑`/`↓` + `Enter`, per Zifferntaste `1`–`7` direkt oder `q` zum
+Auswahl mit `↑`/`↓` + `Enter`, per Zifferntaste `1`–`9` direkt oder `q` zum
 Beenden. Das Dashboard oben zeigt den Konfigurationsstand.
 
 | # | Punkt | Funktion |
@@ -143,7 +145,9 @@ Beenden. Das Dashboard oben zeigt den Konfigurationsstand.
 | 4 | 📡 DNS Logging | Live-Ansicht |
 | 5 | 🚫 Sperrliste anzeigen | `blocklist.txt` scrollbar ansehen |
 | 6 | 📊 Statistik | Auswertung der laufenden Sitzung |
-| 7 | 👋 Ende | Beenden |
+| 7 | 📝 Logdatei Pfad | Ziel des Datei-Logs festlegen |
+| 8 | 🌐 Web-UI Port | Port der Web-UI setzen (Standard `8080`) |
+| 9 | 👋 Ende | Beenden |
 
 ### Gerätefilter
 
@@ -177,6 +181,7 @@ die aktuelle Rate; darunter die Tastenleiste mit `●` (an) / `○` (aus) je Sch
 | `t` | Telegram an/aus (nur bei aktiver Sperrliste) |
 | `p` | Pause / zurück zur Live-Ansicht |
 | `l` | Datei-Log an/aus |
+| `w` | Web-UI an/aus (Schalter, Geräteauswahl und Live-Log im Browser; Port siehe `WEB_PORT`) — **ohne Authentifizierung, lauscht auf allen Interfaces** |
 | `c` | Puffer und Zähler leeren |
 | `x` / `q` | zurück zum Hauptmenü |
 | `↑`/`↓`, `PgUp`/`PgDn`, `Home`, Mausrad | scrollen |
@@ -271,6 +276,36 @@ zurück.
 
 Die Datei wird angehängt, nicht rotiert.
 
+### Web-UI
+
+Alternativ zu den Tasten im Terminal lässt sich lauschbox im Browser bedienen –
+auch vom Handy im selben Netz. Die Web-UI läuft nur, solange das DNS-Logging aktiv ist.
+
+**Einschalten**
+
+1. DNS-Logging starten (Menü **[4]** oder `lauschbox -l`)
+2. `w` drücken – die Statusleiste zeigt `w ●` und die Adresse
+3. Im Browser `http://<Rechnername>:8080` öffnen
+
+Der Port ist über Menü **[8]** oder `WEB_PORT` in der `lauschbox.env` änderbar (1024–65535).
+
+<p align="center"><img src="docs/img/web-ui.svg" alt="Web-UI: Schalter, Geräteauswahl und Live-Log" width="720"></p>
+
+**Was sie kann**
+
+| Bereich | Funktion |
+|---|---|
+| Schalter | Gerätefilter, Sperrliste, Telegram, Pause, Datei-Log, „Puffer leeren“ – wirken wie die Tasten `g` `s` `t` `p` `l` `c` |
+| Geräteauswahl | Checkbox-Liste der Geräte; „Speichern“ übernimmt den Filter (schreibt `.devices.env`), „Alle“ hebt ihn auf |
+| Live-Log | neueste Einträge oben, Treffer rot, bis zu 500 Zeilen |
+
+Terminal und Browser sind synchron: Änderungen im Browser greifen sofort, Änderungen im
+Terminal erscheinen dort nach spätestens 2 Sekunden. Telegram lässt sich im Browser nur
+schalten, wenn es konfiguriert und die Sperrliste aktiv ist.
+
+> ⚠️ Die Web-UI hat **keine Authentifizierung** und lauscht auf allen Interfaces –
+> nur im vertrauenswürdigen Heimnetz einschalten.
+
 ## Konfiguration
 
 ### Dateien und Suchreihenfolge
@@ -313,6 +348,8 @@ DEDUPE_SECS=2
 NOTIFY_COOLDOWN=30
 # Geräteliste (Namensauflösung) alle n Sekunden auffrischen; 0 = aus
 DEVICE_REFRESH_SECS=300
+# Port der Web-UI (Taste w im Logging), 1024-65535
+WEB_PORT=8080
 # Ziel des Datei-Logs (Taste l)
 LOG_FILE=/Users/dein-name/.config/lauschbox/dns.log
 ```
@@ -325,6 +362,7 @@ LOG_FILE=/Users/dein-name/.config/lauschbox/dns.log
 | `DEDUPE_SECS` | `2` | Zeitfenster für die Duplikat-Unterdrückung |
 | `NOTIFY_COOLDOWN` | `30` | Mindestabstand gleicher Telegram-Meldungen |
 | `DEVICE_REFRESH_SECS` | `300` | Intervall für die Auffrischung der Gerätenamen im Hintergrund |
+| `WEB_PORT` | `8080` | Port der Web-UI (1024–65535), änderbar über Menü **[8]** |
 | `LOG_FILE` | `~/.config/lauschbox/dns.log` | Pfad des Datei-Logs — **absoluter Pfad**, `~` und `$HOME` werden in der `.env` nicht aufgelöst |
 
 Farben abschalten: `--no-color` oder `NO_COLOR=1`.

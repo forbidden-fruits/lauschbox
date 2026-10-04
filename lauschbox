@@ -74,6 +74,7 @@ CAPTURE_IFACE="1-lan"      # Fritzbox-Schnittstelle der Aufzeichnung
 DEDUPE_SECS=2              # identische Anfrage (Gerät+Domain) innerhalb n s ausblenden; 0 = aus
 NOTIFY_COOLDOWN=30         # Telegram: gleicher Treffer (Gerät+Domain) frühestens nach n s erneut; 0 = aus
 DEVICE_REFRESH_SECS=300    # Geräteliste im Hintergrund auffrischen; 0 = aus
+WEB_PORT=8080             # Port der Web-UI (Hotkey w im Logging)
 LOG_FILE_DEFAULT="$CONFIG_DIR/dns.log"
 LOG_FILE="$LOG_FILE_DEFAULT"
 
@@ -101,10 +102,11 @@ load_env() {  # load_env DATEI VAR...
   return 0
 }
 load_env "$ENV_MAIN" LOG_MAX_LINES BLOCKLIST_MAX_LINES CAPTURE_IFACE DEDUPE_SECS \
-  NOTIFY_COOLDOWN DEVICE_REFRESH_SECS LOG_FILE
+  NOTIFY_COOLDOWN DEVICE_REFRESH_SECS LOG_FILE WEB_PORT
 _posint() { [[ ${!1} =~ ^[0-9]+$ ]] || printf -v "$1" '%s' "$2"; }
 _posint LOG_MAX_LINES 1000; _posint BLOCKLIST_MAX_LINES 1000; _posint DEDUPE_SECS 2
 _posint NOTIFY_COOLDOWN 30; _posint DEVICE_REFRESH_SECS 300
+_posint WEB_PORT 8080; ((WEB_PORT >= 1024 && WEB_PORT <= 65535)) || WEB_PORT=8080
 ((LOG_MAX_LINES > 0)) || LOG_MAX_LINES=1000
 ((BLOCKLIST_MAX_LINES > 0)) || BLOCKLIST_MAX_LINES=1000
 [[ -n $LOG_FILE ]] || LOG_FILE="$LOG_FILE_DEFAULT"
@@ -137,6 +139,7 @@ FB_IP=""; FB_USER=""; FB_PASS=""
 TG_TOKEN=""; TG_CHAT_ID=""
 DEVICE_FILTER=""; DEVICE_FILTER_NAMES=""
 FILTER_ON=1; BLOCK_ON=0; TG_ON=0; FILE_ON=0; PAUSED=0
+WEB_ON=0; WEB_PID=""; WEB_SEQ=0
 EVENT=""
 CURL_PID=""; TSHARK_PID=""; KEY_PID=""; TICK_PID=""; DEVREF_PID=""
 FIFO_PCAP=""; FIFO_OUT=""
@@ -349,6 +352,25 @@ save_env() {  # save_env DATEI VAR...  (0600, atomar)
 save_fb()     { save_env "$ENV_FB" FB_IP FB_USER FB_PASS; }
 save_tg()     { save_env "$ENV_TG" TG_TOKEN TG_CHAT_ID; }
 save_filter() { save_env "$ENV_DEV" DEVICE_FILTER DEVICE_FILTER_NAMES; }
+
+apply_filter_macs() {  # apply_filter_macs CSV — leer/ALL = alle Geräte; setzt Namen, speichert
+  local csv=$1 m i names="" nm
+  if [[ -z $csv || $csv == ALL ]]; then
+    DEVICE_FILTER="ALL"; DEVICE_FILTER_NAMES="Alle Netzwerkgeräte"
+  else
+    local IFS=,
+    for m in $csv; do
+      nm=$m
+      for ((i = 0; i < DEV_COUNT; i++)); do
+        [[ ${DEV_MAC[i]} == "$m" ]] && { nm=${DEV_NAME[i]:-$m}; break; }
+      done
+      names+="${names:+, }$nm"
+    done
+    IFS=$' \t\n'
+    DEVICE_FILTER=$csv; DEVICE_FILTER_NAMES=$names
+  fi
+  save_filter
+}
 
 set_env_key() {  # set_env_key DATEI VAR WERT — ersetzt/ergänzt VAR, übrige Zeilen bleiben; WERT leer = entfernen
   local f=$1 k=$2 v=$3 line tmp re="^[[:space:]]*(export[[:space:]]+)?$2="
@@ -570,12 +592,14 @@ session_start() {
   ticker > "$FIFO_OUT" &
   TICK_PID=$!
   pipeline_start
+  ((WEB_ON)) && web_start
 }
 
 session_stop() {
   kill_wait "$KEY_PID"; kill_wait "$TICK_PID"
   KEY_PID=""; TICK_PID=""
   restore_tty
+  web_stop
   pipeline_stop
   exec 3>&- 3<&-
   [[ -n $FIFO_OUT ]] && rm -f "$FIFO_OUT"
@@ -660,7 +684,7 @@ toggle_dot() { if [[ $1 == 1 ]]; then printf '%s●' "$C_GREEN"; else printf '%s
 draw_bar() {  # Pill-Tastenleiste in der letzten Zeile
   local long=0 s
   ((COLS >= 104)) && long=1
-  local L_g="Gerätefilter" L_e="ändern" L_s="Sperrliste" L_t="Telegram" L_p="Pause" L_l="Datei" L_c="leeren" L_x="Menü"
+  local L_g="Gerätefilter" L_e="ändern" L_s="Sperrliste" L_t="Telegram" L_p="Pause" L_l="Datei" L_w="Web" L_c="leeren" L_x="Menü"
   ((long)) || { L_g="Filter"; L_e="ändern"; L_s="Sperre"; L_t="TG"; L_l="Log"; L_c="clr"; }
   s="${C_BG}"
   s+=" ${C_MAUVE}${C_BOLD}g${C_NOBOLD}${C_TEXT} $L_g $(toggle_dot "$FILTER_ON")"
@@ -673,6 +697,7 @@ draw_bar() {  # Pill-Tastenleiste in der letzten Zeile
   fi
   s+="  ${C_MAUVE}${C_BOLD}p${C_NOBOLD}${C_TEXT} $L_p $(toggle_dot "$PAUSED")"
   s+="  ${C_MAUVE}${C_BOLD}l${C_NOBOLD}${C_TEXT} $L_l $(toggle_dot "$FILE_ON")"
+  s+="  ${C_MAUVE}${C_BOLD}w${C_NOBOLD}${C_TEXT} $L_w $(toggle_dot "$WEB_ON")"
   s+="  ${C_MAUVE}${C_BOLD}c${C_NOBOLD}${C_TEXT} $L_c"
   s+="  ${C_MAUVE}${C_BOLD}x${C_NOBOLD}${C_TEXT} $L_x"
   printf '\033[%d;1H%s\033[K%s' "$ROWS" "$s" "$C_RESET"
@@ -683,6 +708,7 @@ draw_rule() {  # Trennlinie mit Filter-/Sperrlisten-Chip
   if [[ $FILTER_ON == 1 ]]; then chip="📱 ${DEVICE_FILTER_NAMES:-Alle Netzwerkgeräte}"
   else chip="📱 alle Geräte (Filter aus)"; fi
   [[ $BLOCK_ON == 1 ]] && chip+="  ·  🚫 nur Sperrliste ($BL_COUNT)"
+  ((WEB_ON)) && chip+="  ·  🌐 :$WEB_PORT"
   chip+="  ·  $CAPTURE_IFACE"
   local max=$((COLS - 8))
   ((${#chip} > max)) && chip="${chip:0:$((max - 1))}…"
@@ -810,6 +836,7 @@ Zeit: $ts"
     printf '%s\t%s\t%s\n' "$name" "$d" "$hit" >> "$STATS"
     ((FILE_ON)) && printf '%s %s %s %s %s%s\n' "$TODAY" "$ts" "$name" "$ip" "$d" "$([[ $hit == 1 ]] && echo ' [TREFFER]')" >> "$LOG_FILE"
     rec="$ts$US$name$US$ip$US$d$US$hit"
+    ((WEB_ON)) && web_log_append "$ts" "$name" "$ip" "$d" "$hit"
     log_push "$rec"
     if ((LOG_OFF > 0 || PAUSED)); then
       LOG_OFF=$((LOG_OFF + 1)); LOG_NEW=$((LOG_NEW + 1))   # Fenster bleibt stehen
@@ -872,15 +899,29 @@ on_tick() {
   fi
   # Geräteliste im Hintergrund auffrischen
   if [[ -n $DEVREF_PID ]] && ! kill -0 "$DEVREF_PID" 2>/dev/null; then
-    if wait "$DEVREF_PID" 2>/dev/null && [[ -s $TMPD/dev.new ]]; then load_devices "$TMPD/dev.new"; fi
+    if wait "$DEVREF_PID" 2>/dev/null && [[ -s $TMPD/dev.new ]]; then
+      load_devices "$TMPD/dev.new" && mv -f "$TMPD/dev.new" "$TMPD/dev.tsv"
+    fi
     DEVREF_PID=""
   elif [[ -z $DEVREF_PID ]] && ((DEVICE_REFRESH_SECS > 0 && SECONDS - DEV_AT >= DEVICE_REFRESH_SECS)); then
     DEV_AT=$SECONDS
     fetch_devices "$TMPD/dev.new" &
     DEVREF_PID=$!
   fi
-  ((TICKS % 60 == 0)) && { TODAY=$(date +%F); prune_seen; }
+  if ((TICKS % 60 == 0)); then
+    TODAY=$(date +%F); prune_seen
+    if ((WEB_ON)) && [[ -f $WEB_LOG ]] && (( $(wc -l < "$WEB_LOG") > LOG_MAX_LINES )); then
+      tail -n "$LOG_MAX_LINES" "$WEB_LOG" > "$WEB_LOG.tmp" && mv -f "$WEB_LOG.tmp" "$WEB_LOG"
+    fi
+  fi
   if [[ -n $MSG_TEXT ]] && ((SECONDS >= MSG_UNTIL)); then MSG_TEXT=""; fi
+  if ((WEB_ON)); then
+    if ! kill -0 "$WEB_PID" 2>/dev/null; then
+      WEB_ON=0; WEB_PID=""; msg "⚠ Web-UI beendet (Port $WEB_PORT belegt?)"; draw_bar
+    else
+      web_state_write
+    fi
+  fi
   draw_status
 }
 
@@ -921,6 +962,331 @@ toggle_file() {
   draw_bar
 }
 
+toggle_tg() {  # Rückgabe 1 nur: Sperrliste an, TG aus, Telegram nicht konfiguriert
+  if [[ $BLOCK_ON != 1 ]]; then
+    msg "⚠ Telegram nur bei aktiver Sperrliste (Taste s)"
+  elif [[ $TG_ON == 1 ]]; then
+    TG_ON=0; draw_bar; msg "Telegram-Benachrichtigung aus"
+  elif load_tg; then
+    TG_ON=1; draw_bar; msg "Telegram-Benachrichtigung an"
+  else
+    return 1
+  fi
+  return 0
+}
+
+clear_buffers() {
+  LOG_BUF=(); LOG_OFF=0; LOG_NEW=0; PAUSED=0; : > "$STATS"
+  CNT_TOTAL=0; CNT_HIT=0
+  log_render; draw_status; msg "Puffer und Zähler geleert"
+}
+
+# ---------- Web-UI ----------
+# python3-Kindprozess (PY_WEB): liest Zustand/Log aus Dateien in $TMPD und schickt
+# Befehle als "W;KEY;VAL"-Zeilen ins Event-FIFO (fd 3) — ui_loop führt sie wie Tasten aus.
+WEB_STATE="$TMPD/web.state"; WEB_LOG="$TMPD/web.log"; WEB_DEV="$TMPD/web.devices"
+read -r -d '' PY_WEB <<'PY'
+import sys, os, json, re, threading
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+
+port, tmpd, fifo = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+MAC = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
+BOOL_KEYS = {"filter": "filter_on", "block": "block_on", "tg": "tg_on", "pause": "paused", "file": "file_on"}
+lock = threading.Lock()
+
+def rd(name):
+    try:
+        with open(os.path.join(tmpd, name), encoding="utf-8", errors="replace") as f:
+            return f.read().splitlines()
+    except OSError:
+        return []
+
+def toint(v):
+    try:
+        return int(v)
+    except ValueError:
+        return 0
+
+def state():
+    kv = {}
+    for ln in rd("web.state"):
+        k, _, v = ln.partition("\t")
+        kv[k] = v
+    macs = kv.get("filter_macs", "")
+    allf = macs in ("", "ALL")
+    devs = []
+    for ln in rd("dev.tsv"):
+        p = ln.split("\x1f")
+        if len(p) >= 6 and p[3]:
+            devs.append({"active": p[0] == "1", "name": p[1], "ip": p[2], "mac": p[3].lower(),
+                         "iface": p[4], "guest": p[5] == "1"})
+    st = {k: kv.get(k, "0") == "1" for k in ("filter_on", "block_on", "tg_on", "paused", "file_on", "tg_conf")}
+    st.update({"bl_count": toint(kv.get("bl_count", "0")), "filter_macs": [] if allf else macs.split(","),
+               "filter_all": allf, "filter_names": kv.get("filter_names", ""),
+               "total": toint(kv.get("total", "0")), "hits": toint(kv.get("hits", "0")),
+               "reconnect": toint(kv.get("reconnect", "0")), "devices": devs})
+    return st
+
+def log_since(since):
+    rows, last = [], since
+    for ln in rd("web.log"):
+        p = ln.split("\t")
+        if len(p) < 6:
+            continue
+        n = toint(p[0])
+        if n > since:
+            rows.append([p[1], p[2], p[3], p[4], p[5]])
+            last = max(last, n)
+    return {"last": last, "rows": rows}
+
+def send_cmd(line):
+    data = line.encode()
+    if len(data) >= 512:
+        raise OSError("zu lang")
+    fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+
+def apply_set(key, value):
+    """→ (status, payload)"""
+    if key in BOOL_KEYS:
+        if isinstance(value, bool) or value in (0, 1):
+            send_cmd("W;%s;%d\n" % (key, 1 if value else 0))
+            return 200, {"ok": True}
+        return 400, {"error": "value muss bool sein"}
+    if key == "clear":
+        send_cmd("W;clear;\n")
+        return 200, {"ok": True}
+    if key == "devices":
+        if not isinstance(value, list) or not all(isinstance(m, str) and MAC.match(m) for m in value):
+            return 400, {"error": "ungültige MAC-Liste"}
+        with lock:
+            p = os.path.join(tmpd, "web.devices")
+            with open(p + ".tmp", "w") as f:
+                f.write((",".join(value) or "ALL") + "\n")
+            os.replace(p + ".tmp", p)
+            send_cmd("W;devices;\n")
+        return 200, {"ok": True}
+    return 400, {"error": "unbekannter Schlüssel"}
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def reply(self, code, body, ctype="application/json; charset=utf-8"):
+        if not isinstance(body, bytes):
+            body = (body if isinstance(body, str) else json.dumps(body)).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        u = urlparse(self.path)
+        if u.path == "/":
+            self.reply(200, PAGE, "text/html; charset=utf-8")
+        elif u.path == "/api/state":
+            self.reply(200, state())
+        elif u.path == "/api/log":
+            try:
+                since = int(parse_qs(u.query).get("since", ["0"])[0])
+            except ValueError:
+                since = 0
+            self.reply(200, log_since(since))
+        else:
+            self.reply(404, {"error": "nicht gefunden"})
+
+    def do_POST(self):
+        if urlparse(self.path).path != "/api/set":
+            return self.reply(404, {"error": "nicht gefunden"})
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            n = -1
+        if n < 0 or n > 65536:
+            return self.reply(400, {"error": "Body ungültig oder zu groß"})
+        try:
+            req = json.loads(self.rfile.read(n) or b"{}")
+            key, value = req["key"], req.get("value")
+        except (ValueError, KeyError, TypeError):
+            return self.reply(400, {"error": "JSON {key,value} erwartet"})
+        try:
+            code, payload = apply_set(key, value)
+        except OSError:
+            code, payload = 503, {"error": "lauschbox nicht erreichbar"}
+        self.reply(code, payload)
+
+PAGE = r"""<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>lauschbox</title>
+<style>
+:root{--base:#24273a;--mantle:#1e2030;--surf:#363a4f;--text:#cad3f5;--sub:#6e738d;--mauve:#c6a0f6;--green:#a6da95;--red:#ed8796;--sky:#91d7e3;--blue:#8aadf4}
+*{box-sizing:border-box}body{margin:0;background:var(--base);color:var(--text);font:14px/1.4 ui-monospace,Menlo,monospace}
+header{padding:12px 16px;background:var(--mantle);display:flex;gap:16px;align-items:baseline;flex-wrap:wrap}
+h1{margin:0;color:var(--mauve);font-size:18px}#cnt{color:var(--sub)}
+main{padding:16px;display:grid;grid-template-columns:minmax(0,1fr);gap:16px;max-width:1100px;margin:auto}
+section{min-width:0}
+section{background:var(--mantle);border-radius:8px;padding:12px}
+h2{margin:0 0 8px;font-size:13px;color:var(--sub);text-transform:uppercase;letter-spacing:.05em}
+button{background:var(--surf);color:var(--text);border:0;border-radius:6px;padding:6px 12px;font:inherit;cursor:pointer;margin:2px}
+button:hover{background:#494d64}button:disabled{opacity:.4;cursor:not-allowed}
+button.on{outline:1px solid var(--green)}button.on::before{content:"● ";color:var(--green)}
+button:not(.on)::before{content:"○ ";color:var(--red)}button.plain::before{content:""}
+#devs{max-height:260px;overflow:auto;margin:8px 0}
+#devs label{display:flex;gap:8px;padding:2px 4px}#devs label:hover{background:var(--surf)}
+.i{color:var(--sub)}.act{color:var(--sky)}.ip{color:var(--blue)}
+#log{max-height:55vh;overflow:auto}table{border-collapse:collapse;width:100%}
+td{padding:1px 8px 1px 0;white-space:nowrap}tr.hit td{color:var(--red);font-weight:bold}
+td:nth-child(1){color:var(--sub)}td:nth-child(2){color:var(--sky)}td:nth-child(3){color:var(--blue)}tr.hit td{color:var(--red)}
+#err{color:var(--red)}
+#devs label{flex-wrap:wrap;align-items:baseline}
+@media(max-width:600px){
+body{font-size:13px}header{padding:10px 12px}main{padding:10px;gap:10px}
+button{padding:8px 12px}
+#log{max-height:60vh}table,tbody{display:block}
+tr{display:flex;flex-wrap:wrap;gap:0 8px;padding:3px 0;border-bottom:1px solid var(--surf)}
+td{padding:0;white-space:normal}td:nth-child(4){flex-basis:100%;word-break:break-all}
+}
+</style></head><body>
+<header><h1>lauschbox</h1><span id="cnt"></span><span id="err"></span></header>
+<main>
+<section><h2>Schalter</h2><div id="sw"></div></section>
+<section><h2>Gerätefilter <span id="fn" class="i"></span></h2>
+<div id="devs"></div>
+<button id="save" class="plain">Speichern</button><button id="all" class="plain">Alle</button></section>
+<section><h2>Live-Log</h2><div id="log"><table><tbody id="tb"></tbody></table></div></section>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+const SW=[["filter","filter_on","Gerätefilter"],["block","block_on","Sperrliste"],["tg","tg_on","Telegram"],["pause","paused","Pause"],["file","file_on","Datei-Log"]];
+let st=null,dirty=false,sel=new Set(),since=0,devSig="";
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
+async function post(key,value){
+  try{const r=await fetch("/api/set",{method:"POST",body:JSON.stringify({key,value})});
+    $("#err").textContent=r.ok?"":"Fehler: "+(await r.json()).error;}
+  catch(e){$("#err").textContent="Server nicht erreichbar"}
+}
+function renderSw(){
+  const box=$("#sw");box.textContent="";
+  SW.forEach(([k,f,l])=>{
+    const b=el("button",st[f]?"on":"",l);
+    if(k==="tg"&&(!st.tg_conf||!st.block_on)){b.disabled=true;b.title=!st.tg_conf?"Telegram nicht konfiguriert":"Nur bei aktiver Sperrliste"}
+    b.onclick=async()=>{await post(k,!st[f]);setTimeout(poll,300)};
+    box.appendChild(b)});
+  const c=el("button","plain","Puffer leeren");
+  c.onclick=async()=>{await post("clear",null);$("#tb").textContent="";setTimeout(poll,300)};
+  box.appendChild(c);
+}
+function renderDevs(){
+  const sig=JSON.stringify([st.devices,st.filter_macs]);
+  if(dirty||sig===devSig)return;
+  devSig=sig;const box=$("#devs");box.textContent="";
+  st.devices.forEach(d=>{
+    const l=el("label"),cb=el("input");cb.type="checkbox";cb.checked=sel.has(d.mac);
+    cb.onchange=()=>{dirty=true;cb.checked?sel.add(d.mac):sel.delete(d.mac)};
+    l.append(cb,el("span",d.active?"act":"i",d.name||"(ohne Namen)"),el("span","ip",d.ip||"-"),el("span","i",d.mac+(d.guest?" · Gast":"")));
+    box.appendChild(l)});
+}
+async function poll(){
+  try{st=await (await fetch("/api/state")).json();$("#err").textContent=""}catch(e){$("#err").textContent="Server nicht erreichbar";return}
+  if(!dirty){sel=new Set(st.filter_macs)}
+  $("#cnt").textContent="Σ "+st.total+" · 🚫 "+st.hits+(st.reconnect?" · ↻ Reconnect":"");
+  $("#fn").textContent="– aktiv: "+(st.filter_on?st.filter_names||"Alle Netzwerkgeräte":"Filter aus");
+  renderSw();renderDevs();
+}
+async function tail(){
+  try{const j=await (await fetch("/api/log?since="+since)).json();
+    since=j.last;const tb=$("#tb");
+    j.rows.forEach(r=>{const tr=el("tr",r[4]==="1"?"hit":"");
+      r.slice(0,4).forEach(x=>tr.appendChild(el("td","",x)));tb.insertBefore(tr,tb.firstChild)});
+    while(tb.rows.length>500)tb.deleteRow(-1);
+  }catch(e){}
+}
+$("#save").onclick=async()=>{await post("devices",[...sel]);dirty=false;devSig="";setTimeout(poll,300)};
+$("#all").onclick=async()=>{await post("devices",[]);dirty=false;sel=new Set();devSig="";setTimeout(poll,300)};
+poll();tail();setInterval(poll,2000);setInterval(tail,1000);
+</script></body></html>"""
+
+ThreadingHTTPServer(("0.0.0.0", port), H).serve_forever()
+PY
+
+web_state_write() {
+  local tgc=0 pz=0
+  [[ -n $TG_TOKEN && -n $TG_CHAT_ID ]] && tgc=1
+  ((PAUSED || LOG_OFF > 0)) && pz=1
+  printf '%s\t%s\n' filter_on "$FILTER_ON" block_on "$BLOCK_ON" tg_on "$TG_ON" paused "$pz" \
+    file_on "$FILE_ON" tg_conf "$tgc" bl_count "$BL_COUNT" filter_macs "$DEVICE_FILTER" \
+    filter_names "$DEVICE_FILTER_NAMES" total "$CNT_TOTAL" hits "$CNT_HIT" reconnect "$RECONNECT" \
+    > "$WEB_STATE.tmp" && mv -f "$WEB_STATE.tmp" "$WEB_STATE"
+}
+
+web_log_append() {  # TS NAME IP DOMAIN HIT
+  WEB_SEQ=$((WEB_SEQ + 1))
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$WEB_SEQ" "$1" "$2" "$3" "$4" "$5" >> "$WEB_LOG"
+}
+
+web_cmd() {  # web_cmd KEY VAL — explizite Werte (idempotent)
+  local cur csv m macs="" re='^([0-9a-f]{2}:){5}[0-9a-f]{2}$'
+  case $1 in
+    filter|block|tg|pause|file)
+      case $1 in
+        filter) cur=$FILTER_ON ;;
+        block)  cur=$BLOCK_ON ;;
+        tg)     cur=$TG_ON ;;
+        pause)  cur=0; ((PAUSED || LOG_OFF > 0)) && cur=1 ;;
+        file)   cur=$FILE_ON ;;
+      esac
+      if [[ $cur != "$2" ]]; then
+        case $1 in
+          filter) toggle_filter ;;
+          block)  toggle_block ;;
+          tg)     toggle_tg || msg "⚠ Telegram nicht konfiguriert (Menü → Telegram)" ;;
+          pause)  toggle_pause ;;
+          file)   toggle_file ;;
+        esac
+      fi ;;
+    clear) clear_buffers; : > "$WEB_LOG" ;;
+    devices)
+      csv=""
+      IFS= read -r csv < "$WEB_DEV" 2>/dev/null
+      local IFS=,
+      for m in $csv; do
+        [[ $m =~ $re ]] && macs+="${macs:+,}$m"
+      done
+      IFS=$' \t\n'
+      apply_filter_macs "$macs"
+      FILTER_ON=1
+      draw_rule; draw_bar; msg "Gerätefilter (Web): $DEVICE_FILTER_NAMES" ;;
+  esac
+  web_state_write
+}
+
+web_start() {
+  web_state_write
+  : > "$WEB_LOG"
+  python3 -c "$PY_WEB" "$WEB_PORT" "$TMPD" "$FIFO_OUT" >/dev/null 2>&1 &
+  WEB_PID=$!
+}
+
+web_stop() {
+  kill_wait "$WEB_PID"
+  WEB_PID=""
+}
+
+toggle_web() {
+  if ((WEB_ON)); then
+    WEB_ON=0; web_stop; msg "Web-UI aus"
+  else
+    WEB_ON=1; web_start; msg "Web-UI an → http://$(hostname):$WEB_PORT"
+  fi
+  draw_rule; draw_bar
+}
+
 ui_loop() {
   EVENT=""
   local f1 f2 f3 f4 f5 h
@@ -941,23 +1307,13 @@ ui_loop() {
           s) toggle_block ;;
           p) toggle_pause ;;
           l) toggle_file ;;
-          c)
-            LOG_BUF=(); LOG_OFF=0; LOG_NEW=0; PAUSED=0; : > "$STATS"
-            CNT_TOTAL=0; CNT_HIT=0
-            log_render; draw_status; msg "Puffer und Zähler geleert" ;;
+          c) clear_buffers ;;
+          w) toggle_web ;;
           e) EVENT=e; return ;;
-          t)
-            if [[ $BLOCK_ON != 1 ]]; then
-              msg "⚠ Telegram nur bei aktiver Sperrliste (Taste s)"
-            elif [[ $TG_ON == 1 ]]; then
-              TG_ON=0; draw_bar; msg "Telegram-Benachrichtigung aus"
-            elif load_tg; then
-              TG_ON=1; draw_bar; msg "Telegram-Benachrichtigung an"
-            else
-              EVENT=t; return
-            fi ;;
+          t) toggle_tg || { EVENT=t; return; } ;;
           x|q) EVENT=x; return ;;
         esac ;;
+      W) web_cmd "$f2" "$f3" ;;
       "") : ;;
       *) handle_query "$f1" "$f2" "$f3" "$f4" "$f5" ;;
     esac
@@ -1104,18 +1460,12 @@ ui_devices() {
     ((cur >= DEV_COUNT)) && cur=$((DEV_COUNT - 1))
   done
   printf '\033[?25h\033[?1000l\033[?1006l'
-  local macs="" names=""
+  local macs=""
   nsel=0
   for ((i = 0; i < DEV_COUNT; i++)); do
-    if ((chk[i])); then
-      macs+="${macs:+,}${DEV_MAC[i]}"
-      names+="${names:+, }${DEV_NAME[i]:-${DEV_MAC[i]}}"
-      nsel=$((nsel + 1))
-    fi
+    if ((chk[i])); then macs+="${macs:+,}${DEV_MAC[i]}"; nsel=$((nsel + 1)); fi
   done
-  if ((nsel == 0)); then DEVICE_FILTER="ALL"; DEVICE_FILTER_NAMES="Alle Netzwerkgeräte"
-  else DEVICE_FILTER=$macs; DEVICE_FILTER_NAMES=$names; fi
-  save_filter
+  apply_filter_macs "$macs"
   printf '\033[%d;1H\033[2K  %s✔ Gerätefilter gespeichert: %s%s' "$ROWS" "$C_GREEN" "$DEVICE_FILTER_NAMES" "$C_RESET"
   sleep 1
   return 0
@@ -1156,7 +1506,7 @@ ui_logging() {
   capture_stopall
   step_ok "Aufzeichnung auf ${CAPTURE_IFACE} bereit"
 
-  FILTER_ON=1; BLOCK_ON=0; TG_ON=0; PAUSED=0
+  FILTER_ON=1; BLOCK_ON=0; TG_ON=0; PAUSED=0; WEB_ON=0
   LOG_BUF=(); LOG_OFF=0; LOG_NEW=0; SHOWN=0
   RECONNECT=0; BACKOFF=2; BUCKETS=(); CUR_BUCKET=0
   TODAY=$(date +%F)
@@ -1296,8 +1646,30 @@ ui_logpath() {
   return 0
 }
 
+# ---------- Menüpunkt 8: Web-UI Port ----------
+ui_webport() {
+  local p
+  screen
+  title "🌐 Web-UI Port"
+  info "ℹ️  Aktuell:  $WEB_PORT"
+  info "   Standard:  8080 (erlaubt: 1024-65535)"
+  info "   Web-UI einschalten: Taste w im Logging. Gespeichert in $ENV_MAIN."
+  echo
+  ask p "${C_TEXT}Neuer Port — leer = abbrechen${C_RESET}"
+  if [[ -z $p ]]; then return 0; fi
+  if [[ ! $p =~ ^[0-9]+$ ]] || ((10#$p < 1024 || 10#$p > 65535)); then
+    echo; err "✖ Ungültiger Port (1024-65535)."; anykey; return 1
+  fi
+  p=$((10#$p))
+  set_env_key "$ENV_MAIN" WEB_PORT "$p" || { err "✖ Konnte $ENV_MAIN nicht schreiben"; anykey; return 1; }
+  WEB_PORT=$p
+  echo; ok "✔ Gespeichert: $WEB_PORT"
+  anykey
+  return 0
+}
+
 # ---------- Hauptmenü ----------
-MENU_LABELS=("🔌  Verbindung Fritzbox" "✈️   Verbindung Telegram" "📱  Gerätefilter" "📡  DNS Logging" "🚫  Sperrliste anzeigen" "📊  Statistik" "📝  Logdatei Pfad" "👋  Ende")
+MENU_LABELS=("🔌  Verbindung Fritzbox" "✈️   Verbindung Telegram" "📱  Gerätefilter" "📡  DNS Logging" "🚫  Sperrliste anzeigen" "📊  Statistik" "📝  Logdatei Pfad" "🌐  Web-UI Port" "👋  Ende")
 
 menu_dashboard() {  # Statuszeilen
   local fbs tgs fs bls lfs
@@ -1338,7 +1710,8 @@ menu_run() {
     4) ui_blocklist ;;
     5) ui_stats ;;
     6) ui_logpath ;;
-    7) exit 0 ;;
+    7) ui_webport ;;
+    8) exit 0 ;;
   esac
   return 0
 }

@@ -27,6 +27,7 @@
         <a href="#how">Funktionsweise</a>
         <a href="#setup">Setup</a>
         <a href="#usage">Bedienung</a>
+        <a href="#webui">Web-UI</a>
         <a href="#config">Konfiguration</a>
         <a href="#faq">FAQ</a>
         <a class="nav-gh" href="https://github.com/forbidden-fruits/lauschbox" target="_blank" rel="noopener">
@@ -103,6 +104,7 @@
             <button class="key" data-k="t"><b>t</b> Telegram <i class="tog" data-t="t"></i></button>
             <button class="key" data-k="p"><b>p</b> Pause <i class="tog" data-t="p"></i></button>
             <button class="key" data-k="l"><b>l</b> Datei <i class="tog" data-t="l"></i></button>
+            <button class="key" data-k="w"><b>w</b> Web <i class="tog" data-t="w"></i></button>
             <button class="key" data-k="c"><b>c</b> leeren</button>
           </div>
         </div>
@@ -175,12 +177,18 @@
         </article>
 
         <article class="card spot">
+          <div class="card-icon">🌐</div>
+          <h3>Web-UI</h3>
+          <p>Taste <kbd>w</kbd> startet eine Weboberfläche (Port 8080): Schalter, Geräteauswahl und Live-Log im Browser, auch mobil. <strong>Ohne Login</strong> — nur im vertrauenswürdigen Heimnetz nutzen.</p>
+        </article>
+
+        <article class="card spot">
           <div class="card-icon">🔒</div>
           <h3>Lokal &amp; sicher</h3>
           <p>Kein Cloud-Dienst, nichts auf der Box. Passwort und Token landen nicht in der Prozessliste; Configs mit <code>chmod 600</code>.</p>
         </article>
 
-        <article class="card spot span-2">
+        <article class="card spot">
           <div class="card-icon">🎨</div>
           <h3>Fürs Auge</h3>
           <p>Catppuccin-Macchiato-Farben, passt sich der Fenstergröße an. <code>--no-color</code> für Purist:innen.</p>
@@ -280,7 +288,7 @@ cd lauschbox
               <li><b>[3] Gerätefilter</b> — Geräte auswählen</li>
               <li><b>[4] DNS Logging</b> — los geht’s</li>
             </ol>
-            <p class="note">Weitere Punkte: <b>[5]</b> Sperrliste anzeigen · <b>[6]</b> Statistik · <b>[7]</b> Logdatei Pfad (Ziel des Datei-Logs) · <b>[8]</b> Ende. Der aktuelle Log-Pfad steht im Kopf des Hauptmenüs.</p>
+            <p class="note">Weitere Punkte: <b>[5]</b> Sperrliste anzeigen · <b>[6]</b> Statistik · <b>[7]</b> Logdatei Pfad (Ziel des Datei-Logs) · <b>[8]</b> Web-UI Port · <b>[9]</b> Ende. Der aktuelle Log-Pfad steht im Kopf des Hauptmenüs.</p>
             <p class="note">Direkt ins Log starten: <code>lauschbox --log</code></p>
           </div>
         </li>
@@ -302,6 +310,7 @@ cd lauschbox
             <div><kbd>t</kbd><span>Telegram an/aus <em>(nur mit Sperrliste)</em></span></div>
             <div><kbd>p</kbd><span>Pause / Live</span></div>
             <div><kbd>l</kbd><span>Datei-Log an/aus</span></div>
+            <div><kbd>w</kbd><span>Web-UI an/aus <em>(ohne Login!)</em></span></div>
             <div><kbd>c</kbd><span>Puffer &amp; Zähler leeren</span></div>
             <div><kbd>x</kbd><span>zurück zum Menü</span></div>
             <div><kbd>↑</kbd><kbd>↓</kbd><span>zeilenweise scrollen</span></div>
@@ -331,6 +340,41 @@ cd lauschbox
             <li>In lauschbox unter <b>[2]</b> eintragen</li>
           </ol>
           <p class="note">Im Log: <kbd>s</kbd> (Sperrliste) an, dann <kbd>t</kbd>.</p>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ================= WEB-UI ================= -->
+    <section id="webui" class="section">
+      <p class="eyebrow">Web-UI</p>
+      <h2>Bedienen im Browser.<br><span class="dim">Auch vom Sofa aus.</span></h2>
+      <p class="lead">Taste <kbd>w</kbd> im DNS-Logging startet eine Weboberfläche. Sie spiegelt die Schalter des Terminals, lässt dich Geräte auswählen und zeigt das Live-Log — am Rechner genauso wie am Handy.</p>
+
+      <figure class="webui">
+        <img src="img/web-ui.svg" alt="Web-UI von lauschbox: Schalter, Geräteauswahl und Live-Log im Browser" width="900" height="600" loading="lazy">
+        <figcaption>Web-UI unter <code>http://&lt;Rechnername&gt;:8080</code> (Beispieldaten)</figcaption>
+      </figure>
+
+      <div class="grid two">
+        <div class="panel spot">
+          <h3>Was sie kann</h3>
+          <ul>
+            <li><b>Schalter:</b> Gerätefilter, Sperrliste, Telegram, Pause, Datei-Log und „Puffer leeren“</li>
+            <li><b>Geräteauswahl:</b> Checkbox-Liste, <i>Speichern</i> schreibt den Filter, <i>Alle</i> hebt ihn auf</li>
+            <li><b>Live-Log:</b> neueste Einträge oben, Treffer rot, bis zu 500 Zeilen</li>
+            <li><b>Synchron:</b> Änderungen im Browser erscheinen sofort im Terminal und umgekehrt (Browser aktualisiert alle 2 s)</li>
+          </ul>
+        </div>
+        <div class="panel spot">
+          <h3>Einschalten</h3>
+          <ol>
+            <li>DNS-Logging starten (<kbd>4</kbd> im Menü oder <code>lauschbox -l</code>)</li>
+            <li><kbd>w</kbd> drücken — die Statusleiste zeigt <code>w ●</code> und die Adresse</li>
+            <li>Im Browser <code>http://&lt;Rechnername&gt;:8080</code> öffnen</li>
+          </ol>
+          <p class="note">Port ändern: Menü <b>[8]</b> oder <code>WEB_PORT</code> in der <code>lauschbox.env</code>. Die Web-UI läuft nur, solange das Logging aktiv ist.</p>
+          <p class="note">⚠️ <strong>Keine Anmeldung, lauscht auf allen Interfaces</strong> — nur im vertrauenswürdigen Heimnetz einschalten.</p>
         </div>
       </div>
     </section>
@@ -382,6 +426,8 @@ DEDUPE_SECS=2
 NOTIFY_COOLDOWN=30
 <span class="c-dim"># Gerätenamen auffrischen alle n Sek.</span>
 DEVICE_REFRESH_SECS=300
+<span class="c-dim"># Port der Web-UI (Taste w), 1024-65535 — auch über Menü [8] setzbar</span>
+WEB_PORT=8080
 <span class="c-dim"># Datei-Log (absoluter Pfad) — auch über Menü [7] "Logdatei Pfad" setzbar</span>
 LOG_FILE=/Users/du/.config/lauschbox/dns.log</pre>
           <table class="tbl">
@@ -393,6 +439,7 @@ LOG_FILE=/Users/du/.config/lauschbox/dns.log</pre>
               <tr><td><code>DEDUPE_SECS</code></td><td>2 <span class="dim-inline">(0 = aus)</span></td></tr>
               <tr><td><code>NOTIFY_COOLDOWN</code></td><td>30 <span class="dim-inline">(0 = aus)</span></td></tr>
               <tr><td><code>DEVICE_REFRESH_SECS</code></td><td>300 <span class="dim-inline">(0 = aus)</span></td></tr>
+              <tr><td><code>WEB_PORT</code></td><td>8080</td></tr>
               <tr><td><code>LOG_FILE</code></td><td>~/.config/lauschbox/dns.log</td></tr>
             </tbody>
           </table>

@@ -110,7 +110,7 @@ if (reduceMotion || !("IntersectionObserver" in window)) {
   const MAX_ROWS = 14;
   const SPARK = "▁▂▃▄▅▆▇█";
 
-  const st = { g: true, s: false, t: false, p: false, l: false };
+  const st = { g: true, s: false, t: false, p: false, l: false, w: false };
   let total = 0, hits = 0, held = 0;
   const rows = [];          // sichtbare Zeilen (Records)
   let buckets = new Array(16).fill(0), cur = 0;
@@ -209,6 +209,7 @@ if (reduceMotion || !("IntersectionObserver" in window)) {
         if (!st.p && held) { held = 0; }
         say(st.p ? "Angehalten — Log läuft im Hintergrund weiter" : "Live-Ansicht"); break;
       case "l": st.l = !st.l; say(st.l ? "Datei-Log an → ~/.config/lauschbox/dns.log" : "Datei-Log aus"); break;
+      case "w": st.w = !st.w; say(st.w ? "Web-UI an → http://fritzbox-mac:8080" : "Web-UI aus"); break;
       case "c": rows.length = 0; total = hits = held = 0; buckets.fill(0); cur = 0; renderLog(); say("Puffer und Zähler geleert"); break;
       default: return;
     }

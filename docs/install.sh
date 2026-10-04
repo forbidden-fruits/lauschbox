@@ -44,6 +44,8 @@ DEDUPE_SECS=2
 NOTIFY_COOLDOWN=30
 # Geräteliste (Namensauflösung) alle n Sekunden auffrischen; 0 = aus
 DEVICE_REFRESH_SECS=300
+# Port der Web-UI (Taste w im Logging), 1024-65535
+WEB_PORT=8080
 # Ziel des Datei-Logs (Taste l) — absoluter Pfad, ~ und $HOME werden nicht aufgelöst
 # Standard: ~/.config/lauschbox/dns.log
 #LOG_FILE=/Users/dein-name/.config/lauschbox/dns.log

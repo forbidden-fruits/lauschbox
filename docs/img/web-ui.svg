@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 600" width="900" height="600" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="13" role="img" aria-label="Web-UI von lauschbox: Schalter, Geräteauswahl und Live-Log im Browser">
+<rect width="900" height="600" rx="12" fill="#181926"/>
+<rect width="900" height="36" rx="12" fill="#1e2030"/><rect y="24" width="900" height="12" fill="#1e2030"/>
+<circle cx="20" cy="18" r="6" fill="#ed8796"/><circle cx="40" cy="18" r="6" fill="#eed49f"/><circle cx="60" cy="18" r="6" fill="#a6da95"/>
+<rect x="150" y="7" width="600" height="22" rx="11" fill="#24273a"/><text x="450" y="22" text-anchor="middle" fill="#a5adcb" font-size="12">http://fritzbox-mac.local:8080</text>
+<rect y="36" width="900" height="564" fill="#24273a"/>
+<rect y="36" width="900" height="44" fill="#1e2030"/>
+<text x="20" y="64" fill="#c6a0f6" font-size="18" font-weight="700">lauschbox</text>
+<text x="130" y="64" fill="#6e738d">Σ 1284 · 🚫 7</text>
+<rect x="16" y="92" width="868" height="68" rx="8" fill="#1e2030"/>
+<text x="30" y="112" fill="#6e738d" font-size="11">SCHALTER</text>
+<rect x="28" y="120" width="140" height="30" rx="6" fill="#363a4f" stroke="#a6da95"/>
+<text x="40" y="140" fill="#a6da95">●</text><text x="56" y="140" fill="#cad3f5">Gerätefilter</text>
+<rect x="176" y="120" width="124" height="30" rx="6" fill="#363a4f"/>
+<text x="188" y="140" fill="#ed8796">○</text><text x="204" y="140" fill="#cad3f5">Sperrliste</text>
+<rect x="308" y="120" width="108" height="30" rx="6" fill="#363a4f"/>
+<text x="320" y="140" fill="#ed8796">○</text><text x="336" y="140" fill="#cad3f5">Telegram</text>
+<rect x="424" y="120" width="84" height="30" rx="6" fill="#363a4f"/>
+<text x="436" y="140" fill="#ed8796">○</text><text x="452" y="140" fill="#cad3f5">Pause</text>
+<rect x="516" y="120" width="116" height="30" rx="6" fill="#363a4f" stroke="#a6da95"/>
+<text x="528" y="140" fill="#a6da95">●</text><text x="544" y="140" fill="#cad3f5">Datei-Log</text>
+<rect x="640" y="120" width="144" height="30" rx="6" fill="#363a4f"/><text x="652" y="140" fill="#cad3f5">Puffer leeren</text>
+<rect x="16" y="172" width="868" height="168" rx="8" fill="#1e2030"/>
+<text x="30" y="192" fill="#6e738d" font-size="11">GERÄTEFILTER – AKTIV: iPhone, Mac</text>
+<rect x="30" y="202" width="14" height="14" rx="3" fill="#a6da95"/>
+<path d="M33 209 l3 3 l6 -8" stroke="#24273a" stroke-width="2" fill="none"/>
+<text x="56" y="214" fill="#91d7e3">iPhone</text><text x="150" y="214" fill="#8aadf4">192.168.179.154</text><text x="310" y="214" fill="#6e738d">aa:bb:cc:11:22:33</text>
+<rect x="30" y="224" width="14" height="14" rx="3" fill="#a6da95"/>
+<path d="M33 231 l3 3 l6 -8" stroke="#24273a" stroke-width="2" fill="none"/>
+<text x="56" y="236" fill="#91d7e3">Mac</text><text x="150" y="236" fill="#8aadf4">192.168.179.129</text><text x="310" y="236" fill="#6e738d">aa:bb:cc:44:55:66</text>
+<rect x="30" y="246" width="14" height="14" rx="3" fill="#363a4f"/>
+<text x="56" y="258" fill="#91d7e3">iPad</text><text x="150" y="258" fill="#8aadf4">192.168.179.126</text><text x="310" y="258" fill="#6e738d">aa:bb:cc:77:88:99</text>
+<rect x="30" y="268" width="14" height="14" rx="3" fill="#363a4f"/>
+<text x="56" y="280" fill="#6e738d">TV</text><text x="150" y="280" fill="#8aadf4">192.168.179.140</text><text x="310" y="280" fill="#6e738d">aa:bb:cc:00:11:22</text>
+<rect x="28" y="298" width="96" height="30" rx="6" fill="#363a4f"/><text x="76" y="318" text-anchor="middle" fill="#cad3f5">Speichern</text>
+<rect x="132" y="298" width="60" height="30" rx="6" fill="#363a4f"/><text x="162" y="318" text-anchor="middle" fill="#cad3f5">Alle</text>
+<rect x="16" y="352" width="868" height="236" rx="8" fill="#1e2030"/><text x="30" y="372" fill="#6e738d" font-size="11">LIVE-LOG</text>
+<text x="30" y="396" fill="#6e738d">12:04:11</text><text x="120" y="396" fill="#91d7e3">iPhone</text><text x="200" y="396" fill="#8aadf4">192.168.179.154</text><text x="360" y="396" fill="#cad3f5">heise.de</text>
+<rect x="16" y="410" width="868" height="22" fill="#ed8796" opacity=".1"/>
+<text x="30" y="424" fill="#ed8796">12:04:09</text><text x="120" y="424" fill="#ed8796">Mac</text><text x="200" y="424" fill="#ed8796">192.168.179.129</text><text x="360" y="424" fill="#ed8796" font-weight="700">tracking.example.org</text>
+<text x="30" y="452" fill="#6e738d">12:04:07</text><text x="120" y="452" fill="#91d7e3">iPad</text><text x="200" y="452" fill="#8aadf4">192.168.179.126</text><text x="360" y="452" fill="#cad3f5">time.apple.com</text>
+<text x="30" y="480" fill="#6e738d">12:04:02</text><text x="120" y="480" fill="#91d7e3">Mac</text><text x="200" y="480" fill="#8aadf4">192.168.179.129</text><text x="360" y="480" fill="#cad3f5">example.com</text>
+<rect x="16" y="494" width="868" height="22" fill="#ed8796" opacity=".1"/>
+<text x="30" y="508" fill="#ed8796">12:03:58</text><text x="120" y="508" fill="#ed8796">iPhone</text><text x="200" y="508" fill="#ed8796">192.168.179.154</text><text x="360" y="508" fill="#ed8796" font-weight="700">ads.example.net</text>
+<text x="30" y="536" fill="#6e738d">12:03:55</text><text x="120" y="536" fill="#91d7e3">TV</text><text x="200" y="536" fill="#8aadf4">192.168.179.140</text><text x="360" y="536" fill="#cad3f5">netflix.com</text>
+</svg>
