@@ -138,8 +138,8 @@ if (reduceMotion || !("IntersectionObserver" in window)) {
   }
 
   function renderRule() {
-    const chip = st.g ? "📱 Mac, iPhone" : "📱 alle Geräte (Filter aus)";
-    ruleEl.innerHTML = `── <span class="chip">${chip}${st.s ? "  ·  🚫 nur Sperrliste (104)" : ""}  ·  1-lan</span> ──────────`;
+    const chip = st.g ? "▣ Mac, iPhone" : "▣ alle Geräte (Filter aus)";
+    ruleEl.innerHTML = `── <span class="chip">${chip}${st.s ? "  ·  ⊘ nur Sperrliste (104)" : ""}  ·  1-lan</span> ──────────`;
   }
   function renderStatus() {
     const max = Math.max(1, ...buckets);
@@ -149,7 +149,7 @@ if (reduceMotion || !("IntersectionObserver" in window)) {
       ? `<span class="c-yellow">⏸ PAUSE${held ? ` <span class="c-dim">(+${held} neu)</span>` : ""}</span>`
       : `<span class="c-green">● LIVE</span>`;
     statusEl.innerHTML = `${state}<span class="d-spark">${spark}</span>` +
-      `<span class="c-text">Σ ${total}</span><span class="c-red">🚫 ${hits}</span>` +
+      `<span class="c-text">Σ ${total}</span><span class="c-red">⊘ ${hits}</span>` +
       `<span class="c-text">${(sum / 10).toFixed(1)}/s</span>` +
       (msg ? `<span class="c-peach">${esc(msg)}</span>` : "");
   }

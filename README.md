@@ -36,16 +36,17 @@ Hauptmenü:
   Filter      iPhone
   Sperrliste  ● 104 Domains
   Logdatei    ~/.config/lauschbox/dns.log (Standard)
+  Web-UI      http://mac:8080
 
-     1  🔌  Verbindung Fritzbox
-     2  ✈️   Verbindung Telegram
-     3  📱  Gerätefilter
-   ▸ 4  📡  DNS Logging
-     5  🚫  Sperrliste anzeigen
-     6  📊  Statistik
-     7  📝  Logdatei Pfad
-     8  🌐  Web-UI Einstellungen
-     9  👋  Ende
+     1  ⇄  Verbindung Fritzbox
+     2  ➤  Verbindung Telegram
+     3  ▣  Gerätefilter
+   ▸ 4  ◉  DNS Logging
+     5  ⊘  Sperrliste anzeigen
+     6  ▤  Statistik
+     7  ✎  Logdatei Pfad
+     8  ◈  Web-UI Einstellungen
+     9  ✕  Ende
 
   ↑/↓ wählen · Enter öffnen · 1-9 direkt · q Ende
 ```
@@ -59,8 +60,8 @@ DNS-Logging (Treffer der Sperrliste mit rotem `▌` am Rand):
    17:57:24 iPad         192.168.179.126 iPad.local
    17:57:31 iPhone       192.168.179.154 time.apple.com
 
- ── 📱 iPhone, Mac  ·  1-lan ─────────────────────────────────────────────
- ● LIVE  ▁▁▁▁▁▁▁█▁▁▆  Σ 9 · 🚫 1 · 0.9/s
+ ── ▣ iPhone, Mac  ·  1-lan ─────────────────────────────────────────────
+ ● LIVE  ▁▁▁▁▁▁▁█▁▁▆  Σ 9 · ⊘ 1 · 0.9/s
  g Gerätefilter ●  e ändern  s Sperrliste ○  t Telegram ○  p Pause ○  l Datei ○  w Web ○  c leeren  x Menü
 ```
 
@@ -139,20 +140,20 @@ Beenden. Das Dashboard oben zeigt den Konfigurationsstand.
 
 | # | Punkt | Funktion |
 |---|---|---|
-| 1 | 🔌 Verbindung Fritzbox | IP/Benutzer/Passwort eingeben, mit Login-Test |
-| 2 | ✈️ Verbindung Telegram | Bot-Token/Chat-ID eingeben, mit Test-Nachricht |
-| 3 | 📱 Gerätefilter | Geräte per Checkbox auswählen |
-| 4 | 📡 DNS Logging | Live-Ansicht |
-| 5 | 🚫 Sperrliste anzeigen | `blocklist.txt` scrollbar ansehen |
-| 6 | 📊 Statistik | Auswertung der laufenden Sitzung |
-| 7 | 📝 Logdatei Pfad | Ziel des Datei-Logs festlegen |
-| 8 | 🌐 Web-UI Einstellungen | Port (Standard `8080`), Benutzername, Passwort und Pfad zur `web.html` setzen; Login leer = Web-UI offen, Pfad leer = Standard-Suche |
-| 9 | 👋 Ende | Beenden |
+| 1 | ⇄ Verbindung Fritzbox | IP/Benutzer/Passwort eingeben, mit Login-Test |
+| 2 | ➤ Verbindung Telegram | Bot-Token/Chat-ID eingeben, mit Test-Nachricht |
+| 3 | ▣ Gerätefilter | Geräte per Checkbox auswählen |
+| 4 | ◉ DNS Logging | Live-Ansicht |
+| 5 | ⊘ Sperrliste anzeigen | `blocklist.txt` scrollbar ansehen |
+| 6 | ▤ Statistik | Auswertung der laufenden Sitzung |
+| 7 | ✎ Logdatei Pfad | Ziel des Datei-Logs festlegen |
+| 8 | ◈ Web-UI Einstellungen | Port (Standard `8080`), Benutzername, Passwort und Pfad zur `web.html` setzen; Login leer = Web-UI offen, Pfad leer = Standard-Suche |
+| 9 | ✕ Ende | Beenden |
 
 ### Gerätefilter
 
-Lädt alle der Box bekannten Geräte (online `●` und offline `○`, WLAN 📶,
-LAN 🔌, Gast 👥) und zeigt sie als Checkbox-Liste.
+Lädt alle der Box bekannten Geräte (online `●` und offline `○`, WLAN `≋`,
+LAN `═`, Gast `◇`) und zeigt sie als Checkbox-Liste.
 
 | Taste | Funktion |
 |---|---|
@@ -170,7 +171,7 @@ die MAC-Adresse, gilt also für IPv4 **und** IPv6.
 
 Pro Zeile: **Uhrzeit · Gerätename · IP · Domain**. Sperrlisten-Treffer sind
 rot/fett und mit `▌` markiert. Unten zeigt die Statusleiste `● LIVE`,
-eine Sparkline der Anfragen pro Sekunde, die Zähler (Σ gesamt, 🚫 Treffer) und
+eine Sparkline der Anfragen pro Sekunde, die Zähler (Σ gesamt, ⊘ Treffer) und
 die aktuelle Rate; darunter die Tastenleiste mit `●` (an) / `○` (aus) je Schalter.
 
 | Taste | Funktion |
