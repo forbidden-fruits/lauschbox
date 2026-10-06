@@ -217,7 +217,7 @@ check_deps() {
       *)       brew_pkgs+=("$t");        apt_pkgs+=("$t") ;;
     esac
   done
-  printf '%s❌ Fehlende Werkzeuge: %s%s\n\n' "$C_RED" "${missing[*]}" "$C_RESET"
+  printf '%s✖ Fehlende Werkzeuge: %s%s\n\n' "$C_RED" "${missing[*]}" "$C_RESET"
   if [[ $(uname -s) == Darwin ]]; then
     printf 'Installation mit Homebrew:\n  %sbrew install %s%s\n' "$C_TEAL" "${brew_pkgs[*]}" "$C_RESET"
   else
@@ -304,8 +304,8 @@ ask() {  # ask VAR LABEL [secret]
   printf -v "$__v" '%s' "$val"
 }
 
-# Schritt-Anzeige: "  ⏳ text" → später zu ✔/✖ umschreiben
-step()      { printf '  %s⏳ %s …%s' "$C_OVERLAY" "$1" "$C_RESET"; }
+# Schritt-Anzeige: "  ◌ text" → später zu ✔/✖ umschreiben
+step()      { printf '  %s◌ %s …%s' "$C_OVERLAY" "$1" "$C_RESET"; }
 step_ok()   { printf '\r\033[2K  %s✔ %s%s\n' "$C_GREEN" "$1" "$C_RESET"; }
 step_fail() { printf '\r\033[2K  %s✖ %s%s\n' "$C_RED" "$1" "$C_RESET"; }
 
@@ -341,7 +341,7 @@ anykey() {
 }
 
 confirm() {  # confirm TEXT → j/J = ja, alles andere nein
-  printf '  %s⚠️  %s [j/N]%s ' "$C_YELLOW" "$1" "$C_RESET"
+  printf '  %s⚠  %s [j/N]%s ' "$C_YELLOW" "$1" "$C_RESET"
   local k=""
   IFS= read -r -s -n 1 k || return 1
   echo
@@ -644,7 +644,7 @@ domain_hit() {  # Suffix-Match: d, dann jeweils ohne linkes Label
 }
 
 blocklist_help() {
-  warn "⚠️  Keine (nutzbare) blocklist.txt gefunden."
+  warn "⚠  Keine (nutzbare) blocklist.txt gefunden."
   echo
   printf '  Lege die Datei %s%s%s an. Eine Domain pro Zeile, z.B.:\n\n' "$C_TEAL" "$BLOCKLIST_FILE" "$C_RESET"
   printf '    %sexample.com%s\n    %stracking.example.org%s\n\n' "$C_TEXT" "$C_RESET" "$C_TEXT" "$C_RESET"
@@ -711,12 +711,12 @@ draw_bar() {  # Pill-Tastenleiste in der letzten Zeile
 
 draw_rule() {  # Trennlinie mit Filter-/Sperrlisten-Chip
   local chip url="" max=$((COLS - 8))
-  if [[ $FILTER_ON == 1 ]]; then chip="📱 ${DEVICE_FILTER_NAMES:-Alle Netzwerkgeräte}"
-  else chip="📱 alle Geräte (Filter aus)"; fi
-  [[ $BLOCK_ON == 1 ]] && chip+="  ·  🚫 nur Sperrliste ($BL_COUNT)"
+  if [[ $FILTER_ON == 1 ]]; then chip="▣ ${DEVICE_FILTER_NAMES:-Alle Netzwerkgeräte}"
+  else chip="▣ alle Geräte (Filter aus)"; fi
+  [[ $BLOCK_ON == 1 ]] && chip+="  ·  ⊘ nur Sperrliste ($BL_COUNT)"
   chip+="  ·  $CAPTURE_IFACE"
   if ((WEB_ON)); then
-    url="🌐 $WEB_URL"  # Link wird nie gekürzt, damit er klickbar bleibt
+    url="◈ $WEB_URL"  # Link wird nie gekürzt, damit er klickbar bleibt
     max=$((max - ${#url} - 5))
     if ((max < 12)); then chip=$url; max=${#url}
     else
@@ -750,7 +750,7 @@ draw_status() {  # Live-/Pin-Status, Sparkline, Zähler, Meldung
   from=$((n > 10 ? n - 10 : 0))
   for ((i = from; i < n; i++)); do sum=$((sum + BUCKETS[i])); done
   rate=0; ((n > from)) && rate=$((sum * 10 / (n - from)))
-  line=" $st  $sp  ${C_TEXT}Σ $CNT_TOTAL${C_OVERLAY} · ${C_RED}🚫 $CNT_HIT${C_OVERLAY} · ${C_TEXT}$((rate / 10)).$((rate % 10))/s"
+  line=" $st  $sp  ${C_TEXT}Σ $CNT_TOTAL${C_OVERLAY} · ${C_RED}⊘ $CNT_HIT${C_OVERLAY} · ${C_TEXT}$((rate / 10)).$((rate % 10))/s"
   local room=$((COLS - sw - 44)) m=$MSG_TEXT
   if [[ -n $m ]] && ((room > 12)); then
     ((${#m} > room)) && m="${m:0:$((room - 1))}…"
@@ -1293,23 +1293,23 @@ ui_loop() {
 # ---------- Menüpunkt 1: Verbindung Fritzbox ----------
 ui_fritzbox() {
   screen
-  title "🔌 Verbindung Fritzbox"
+  title "⇄ Verbindung Fritzbox"
   if [[ -f $ENV_FB ]]; then
     confirm "$ENV_FB existiert bereits. Überschreiben?" || return 1
     echo
   fi
-  info "ℹ️  Standard-IP: 192.168.178.1 bzw. fritz.box — entspricht dem Gateway"
+  info "ℹ  Standard-IP: 192.168.178.1 bzw. fritz.box — entspricht dem Gateway"
   info "   deines Rechners (Heimnetz → Netzwerk im Webinterface)."
   ask FB_IP "${C_TEXT}IP-Adresse der Fritzbox${C_RESET}"
   [[ -z $FB_IP ]] && { warn "Abgebrochen — keine IP eingegeben."; anykey; return 1; }
   echo
-  info "ℹ️  FRITZ!Box-Benutzer (nicht „nur Kennwort“). System → FRITZ!Box-Benutzer,"
+  info "ℹ  FRITZ!Box-Benutzer (nicht „nur Kennwort“). System → FRITZ!Box-Benutzer,"
   info "   Recht „FRITZ!Box Einstellungen“. Zusätzlich: Heimnetz → Netzwerk →"
   info "   Netzwerkeinstellungen → „Zugriff für Anwendungen zulassen“ (TR-064)."
   ask FB_USER "${C_TEXT}Nutzername${C_RESET}"
   [[ -z $FB_USER ]] && { warn "Abgebrochen — kein Nutzername eingegeben."; anykey; return 1; }
   echo
-  info "ℹ️  Passwort des FRITZ!Box-Benutzers (Eingabe verdeckt)."
+  info "ℹ  Passwort des FRITZ!Box-Benutzers (Eingabe verdeckt)."
   ask FB_PASS "${C_TEXT}Passwort${C_RESET}" secret
   [[ -z $FB_PASS ]] && { warn "Abgebrochen — kein Passwort eingegeben."; anykey; return 1; }
   save_fb
@@ -1325,17 +1325,17 @@ ui_fritzbox() {
 # ---------- Menüpunkt 2: Verbindung Telegram ----------
 ui_telegram() {
   screen
-  title "✈️  Verbindung Telegram"
+  title "➤ Verbindung Telegram"
   if [[ -f $ENV_TG ]]; then
     confirm "$ENV_TG existiert bereits. Überschreiben?" || return 1
     echo
   fi
-  info "ℹ️  Bot-Token vom @BotFather: /newbot → Namen vergeben → Token"
+  info "ℹ  Bot-Token vom @BotFather: /newbot → Namen vergeben → Token"
   info "   (Format 123456789:AA…). Den Bot einmal per /start kontaktieren!"
   ask TG_TOKEN "${C_TEXT}Bot-Token${C_RESET}" secret
   [[ -z $TG_TOKEN ]] && { warn "Abgebrochen — kein Token eingegeben."; anykey; return 1; }
   echo
-  info "ℹ️  Chat-ID: @userinfobot anschreiben — oder dem Bot schreiben und"
+  info "ℹ  Chat-ID: @userinfobot anschreiben — oder dem Bot schreiben und"
   info "   https://api.telegram.org/bot<TOKEN>/getUpdates → result[].message.chat.id."
   info "   Gruppen haben negative IDs (Bot muss Mitglied sein)."
   ask TG_CHAT_ID "${C_TEXT}Chat-ID${C_RESET}"
@@ -1353,13 +1353,13 @@ ui_telegram() {
 # ---------- Menüpunkt 3: Gerätefilter (Checkbox-Liste) ----------
 ui_devices() {
   if ! load_fb; then
-    screen; title "📱 Gerätefilter"
+    screen; title "▣ Gerätefilter"
     warn "Keine Fritzbox-Verbindung konfiguriert — bitte zuerst einrichten."
     anykey
     ui_fritzbox || return 1
     load_fb || return 1
   fi
-  screen; title "📱 Gerätefilter"
+  screen; title "▣ Gerätefilter"
   step "Lade Geräteliste von $FB_IP"
   if ! fetch_devices "$TMPD/dev.tsv"; then
     step_fail "Geräteliste nicht ladbar (Zugangsdaten / TR-064 prüfen)"
@@ -1389,15 +1389,15 @@ ui_devices() {
       k=$((off + i))
       printf '\033[%d;1H\033[2K' $((top + i))
       ((k < DEV_COUNT)) || continue
-      icon='🔗'
-      case ${DEV_IF[k]} in 802.11) icon='📶' ;; Ethernet) icon='🔌' ;; esac
-      [[ ${DEV_GUEST[k]} == 1 ]] && icon='👥'
+      icon='·'
+      case ${DEV_IF[k]} in 802.11) icon='≋' ;; Ethernet) icon='═' ;; esac
+      [[ ${DEV_GUEST[k]} == 1 ]] && icon='◇'
       nm=${DEV_NAME[k]:-(ohne Namen)}
       ((${#nm} > 26)) && nm="${nm:0:25}…"
       if [[ ${DEV_ACT[k]} == 1 ]]; then dot="${C_GREEN}●"; else dot="${C_OVERLAY}○"; fi
       if ((chk[k])); then cb="${C_GREEN}[✔]"; else cb="${C_OVERLAY}[ ]"; fi
       if ((k == cur)); then mark="${C_SEL}${C_MAUVE}▸"; else mark=" "; fi
-      line="$mark $cb $dot $icon "
+      line="$mark $cb $dot ${C_MAUVE}$icon "
       if [[ ${DEV_ACT[k]} == 1 ]]; then line+="${C_SKY}"; else line+="${C_OVERLAY}"; fi
       ipd=${DEV_IP[k]:--}
       line+="$nm${SPACES:0:$((26 - ${#nm}))} ${C_BLUE}${ipd}${SPACES:0:$((15 - ${#ipd}))} ${C_OVERLAY}${DEV_MAC[k]}"
@@ -1444,19 +1444,19 @@ ui_devices() {
 # ---------- Menüpunkt 4: DNS Logging ----------
 ui_logging() {
   if ! load_fb; then
-    screen; title "📡 DNS Logging"
+    screen; title "◉ DNS Logging"
     warn "Keine Fritzbox-Verbindung konfiguriert — bitte zuerst einrichten."
     anykey
     ui_fritzbox || return 1
     load_fb || return 1
   fi
   if ! load_filter; then
-    screen; title "📡 DNS Logging"
+    screen; title "◉ DNS Logging"
     info "Noch kein Gerätefilter definiert — bitte Geräte auswählen."
     anykey
     ui_devices || { load_filter || return 1; }
   fi
-  screen; title "📡 DNS Logging"
+  screen; title "◉ DNS Logging"
   step "Login und Geräteliste (parallel)"
   fb_login_raw > "$TMPD/sid" &
   local p1=$!
@@ -1471,7 +1471,7 @@ ui_logging() {
   fi
   step_ok "Login an $FB_IP erfolgreich"
   if ((dev_ok)); then load_devices "$TMPD/dev.tsv"; step_ok "$DEV_COUNT Geräte für die Namensauflösung"
-  else warn "⚠️  Geräteliste nicht ladbar — Gerätenamen können fehlen."; fi
+  else warn "⚠  Geräteliste nicht ladbar — Gerätenamen können fehlen."; fi
   step "Beende verwaiste Aufzeichnungen"
   capture_stopall
   step_ok "Aufzeichnung auf ${CAPTURE_IFACE} bereit"
@@ -1501,7 +1501,7 @@ ui_logging() {
 
 # ---------- Menüpunkt 5: Sperrliste anzeigen ----------
 ui_blocklist() {
-  screen; title "🚫 Sperrliste"
+  screen; title "⊘ Sperrliste"
   if [[ ! -f $BLOCKLIST_FILE ]]; then
     blocklist_help; anykey "Taste = zurück zum Hauptmenü"; return 0
   fi
@@ -1531,7 +1531,7 @@ ui_blocklist() {
       fi
     done
     footer="↑/↓ PgUp/PgDn Home/Ende scrollen · q = zurück · $total Zeilen"
-    ((truncated == 1)) && footer+=" · ⚠️ auf $BLOCKLIST_MAX_LINES begrenzt (lauschbox.env)"
+    ((truncated == 1)) && footer+=" · ⚠ auf $BLOCKLIST_MAX_LINES begrenzt (lauschbox.env)"
     printf '\033[%d;1H\033[2K  %s%s%s' "$ROWS" "$C_OVERLAY" "$footer" "$C_RESET"
     read_key || break
     case $R_KEY in
@@ -1550,7 +1550,7 @@ ui_blocklist() {
 
 # ---------- Menüpunkt 6: Statistik ----------
 ui_stats() {
-  screen; title "📊 Statistik (diese Sitzung)"
+  screen; title "▤ Statistik (diese Sitzung)"
   if [[ ! -s $STATS ]]; then
     info "Noch keine Daten — starte zuerst DNS Logging."
     anykey "Taste = zurück zum Hauptmenü"; return 0
@@ -1589,8 +1589,8 @@ ui_stats() {
 ui_logpath() {
   local p
   screen
-  title "📝 Logdatei Pfad"
-  info "ℹ️  Aktuell:  $LOG_FILE"
+  title "✎ Logdatei Pfad"
+  info "ℹ  Aktuell:  $LOG_FILE"
   info "   Standard:  $LOG_FILE_DEFAULT"
   info "   Gilt für das Datei-Log (Taste l im Logging). Gespeichert in $ENV_MAIN."
   echo
@@ -1620,8 +1620,8 @@ ui_logpath() {
 ui_websettings() {
   local p u pw h
   screen
-  title "🌐 Web-UI Einstellungen"
-  info "ℹ️  Port:      $WEB_PORT  (Standard 8080, erlaubt: 1024-65535)"
+  title "◈ Web-UI Einstellungen"
+  info "ℹ  Port:      $WEB_PORT  (Standard 8080, erlaubt: 1024-65535)"
   if [[ -n $WEB_USER && -n $WEB_PASS ]]; then info "   Login:     Benutzer „${WEB_USER}“, Passwort gesetzt"
   else info "   Login:     keiner — Web-UI ist offen"; fi
   if [[ -n $WEB_HTML ]]; then info "   Seite:     $WEB_HTML  (eigener Pfad)"
@@ -1671,7 +1671,8 @@ ui_websettings() {
 }
 
 # ---------- Hauptmenü ----------
-MENU_LABELS=("🔌  Verbindung Fritzbox" "✈️   Verbindung Telegram" "📱  Gerätefilter" "📡  DNS Logging" "🚫  Sperrliste anzeigen" "📊  Statistik" "📝  Logdatei Pfad" "🌐  Web-UI Einstellungen" "👋  Ende")
+MENU_ICONS=("⇄" "➤" "▣" "◉" "⊘" "▤" "✎" "◈" "✕")  # einspaltige Symbole, in Mauve gezeichnet
+MENU_LABELS=("Verbindung Fritzbox" "Verbindung Telegram" "Gerätefilter" "DNS Logging" "Sperrliste anzeigen" "Statistik" "Logdatei Pfad" "Web-UI Einstellungen" "Ende")
 
 menu_dashboard() {  # Statuszeilen
   local fbs tgs fs bls lfs
@@ -1685,18 +1686,19 @@ menu_dashboard() {  # Statuszeilen
   DASH_3="  ${C_OVERLAY}Filter      $fs"
   DASH_4="  ${C_OVERLAY}Sperrliste  $bls"
   DASH_5="  ${C_OVERLAY}Logdatei    $lfs"
+  DASH_6="  ${C_OVERLAY}Web-UI      ${C_TEXT}http://$(hostname):$WEB_PORT"
 }
 
 menu_draw() {  # menu_draw AUSWAHL
   local i n=${#MENU_LABELS[@]} row=$((HDR_ROWS + 1))
   printf '\033[%d;1H' "$row"
-  printf '%s\033[K%s\n%s\033[K%s\n%s\033[K%s\n%s\033[K%s\n%s\033[K%s\n\033[K\n' \
-    "$DASH_1" "$C_RESET" "$DASH_2" "$C_RESET" "$DASH_3" "$C_RESET" "$DASH_4" "$C_RESET" "$DASH_5" "$C_RESET"
+  printf '%s\033[K%s\n%s\033[K%s\n%s\033[K%s\n%s\033[K%s\n%s\033[K%s\n%s\033[K%s\n\033[K\n' \
+    "$DASH_1" "$C_RESET" "$DASH_2" "$C_RESET" "$DASH_3" "$C_RESET" "$DASH_4" "$C_RESET" "$DASH_5" "$C_RESET" "$DASH_6" "$C_RESET"
   for ((i = 0; i < n; i++)); do
     if ((i == $1)); then
-      printf '  %s%s ▸ %s%d%s  %s%s%s\033[K%s\n' "$C_SEL" "$C_MAUVE" "$C_BOLD" "$((i + 1))" "$C_NOBOLD" "$C_TEXT" "${MENU_LABELS[i]}" "" "$C_RESET"
+      printf '  %s%s ▸ %s%d%s  %s%s%s  %s%s\033[K%s\n' "$C_SEL" "$C_MAUVE" "$C_BOLD" "$((i + 1))" "$C_NOBOLD" "$C_MAUVE" "${MENU_ICONS[i]}" "$C_TEXT" "$C_TEXT" "${MENU_LABELS[i]}" "$C_RESET"
     else
-      printf '  %s   %d%s  %s%s\033[K\n' "$C_OVERLAY" "$((i + 1))" "$C_RESET" "$C_TEXT" "${MENU_LABELS[i]}"
+      printf '  %s   %d%s  %s%s%s  %s%s\033[K\n' "$C_OVERLAY" "$((i + 1))" "$C_RESET" "$C_MAUVE" "${MENU_ICONS[i]}" "$C_TEXT" "$C_TEXT" "${MENU_LABELS[i]}"
     fi
   done
   printf '%s\033[K\n  %s↑/↓ wählen · Enter öffnen · 1-%d direkt · q Ende%s\033[K' "$C_RESET" "$C_OVERLAY" "$n" "$C_RESET"
