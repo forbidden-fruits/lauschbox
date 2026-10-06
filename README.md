@@ -178,7 +178,7 @@ die aktuelle Rate; darunter die Tastenleiste mit `●` (an) / `○` (aus) je Sch
 | `g` | Gerätefilter an/aus (aus = alle Geräte) |
 | `e` | Gerätefilter ändern |
 | `s` | Sperrliste an/aus (an = **nur Treffer** anzeigen) |
-| `t` | Telegram an/aus (nur bei aktiver Sperrliste) |
+| `t` | Telegram an/aus (meldet nur Sperrlisten-Treffer, auch bei ausgeschalteter Sperrliste) |
 | `p` | Pause / zurück zur Live-Ansicht |
 | `l` | Datei-Log an/aus |
 | `w` | Web-UI an/aus (Schalter, Geräteauswahl und Live-Log im Browser; Port siehe `WEB_PORT`) — **ohne Authentifizierung, lauscht auf allen Interfaces** |
@@ -301,7 +301,7 @@ Der Port ist über Menü **[8]** oder `WEB_PORT` in der `lauschbox.env` änderba
 
 Terminal und Browser sind synchron: Änderungen im Browser greifen sofort, Änderungen im
 Terminal erscheinen dort nach spätestens 2 Sekunden. Telegram lässt sich im Browser nur
-schalten, wenn es konfiguriert und die Sperrliste aktiv ist.
+schalten, wenn es konfiguriert ist.
 
 > ⚠️ Die Web-UI hat **keine Authentifizierung** und lauscht auf allen Interfaces –
 > nur im vertrauenswürdigen Heimnetz einschalten.

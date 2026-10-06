@@ -197,11 +197,9 @@ if (reduceMotion || !("IntersectionObserver" in window)) {
       case "e": say("Öffnet die Geräteauswahl (in der echten App)"); break;
       case "s":
         st.s = !st.s;
-        if (!st.s) { st.t = false; tgEl.classList.remove("show"); }
         say(st.s ? "Sperrliste an (104 Einträge) — nur Treffer" : "Sperrliste aus — alle Anfragen");
         renderRule(); break;
       case "t":
-        if (!st.s) { say("⚠ Telegram nur bei aktiver Sperrliste (Taste s)"); break; }
         st.t = !st.t; say(st.t ? "Telegram-Benachrichtigung an" : "Telegram-Benachrichtigung aus");
         if (!st.t) tgEl.classList.remove("show"); break;
       case "p":
