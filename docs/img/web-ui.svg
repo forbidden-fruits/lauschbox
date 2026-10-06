@@ -21,7 +21,7 @@
 <text x="528" y="140" fill="#a6da95">●</text><text x="544" y="140" fill="#cad3f5">Datei-Log</text>
 <rect x="640" y="120" width="144" height="30" rx="6" fill="#363a4f"/><text x="652" y="140" fill="#cad3f5">Puffer leeren</text>
 <rect x="16" y="172" width="868" height="168" rx="8" fill="#1e2030"/>
-<text x="30" y="192" fill="#6e738d" font-size="11">GERÄTEFILTER – AKTIV: iPhone, Mac</text>
+<path d="M30 183 l10 0 l-5 7 z" fill="#c6a0f6"/><text x="46" y="192" fill="#6e738d" font-size="11">GERÄTEFILTER – AKTIV: iPhone, Mac</text>
 <rect x="30" y="202" width="14" height="14" rx="3" fill="#a6da95"/>
 <path d="M33 209 l3 3 l6 -8" stroke="#24273a" stroke-width="2" fill="none"/>
 <text x="56" y="214" fill="#91d7e3">iPhone</text><text x="150" y="214" fill="#8aadf4">192.168.179.154</text><text x="310" y="214" fill="#6e738d">aa:bb:cc:11:22:33</text>
@@ -34,6 +34,7 @@
 <text x="56" y="280" fill="#6e738d">TV</text><text x="150" y="280" fill="#8aadf4">192.168.179.140</text><text x="310" y="280" fill="#6e738d">aa:bb:cc:00:11:22</text>
 <rect x="28" y="298" width="96" height="30" rx="6" fill="#363a4f"/><text x="76" y="318" text-anchor="middle" fill="#cad3f5">Speichern</text>
 <rect x="132" y="298" width="60" height="30" rx="6" fill="#363a4f"/><text x="162" y="318" text-anchor="middle" fill="#cad3f5">Alle</text>
+<rect x="200" y="298" width="124" height="30" rx="6" fill="#363a4f"/><text x="262" y="318" text-anchor="middle" fill="#cad3f5">Aktualisieren</text>
 <rect x="16" y="352" width="868" height="236" rx="8" fill="#1e2030"/><text x="30" y="372" fill="#6e738d" font-size="11">LIVE-LOG</text>
 <text x="30" y="396" fill="#6e738d">12:04:11</text><text x="120" y="396" fill="#91d7e3">iPhone</text><text x="200" y="396" fill="#8aadf4">192.168.179.154</text><text x="360" y="396" fill="#cad3f5">heise.de</text>
 <rect x="16" y="410" width="868" height="22" fill="#ed8796" opacity=".1"/>
