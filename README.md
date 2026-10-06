@@ -44,7 +44,7 @@ Hauptmenü:
      5  🚫  Sperrliste anzeigen
      6  📊  Statistik
      7  📝  Logdatei Pfad
-     8  🌐  Web-UI Port
+     8  🌐  Web-UI Einstellungen
      9  👋  Ende
 
   ↑/↓ wählen · Enter öffnen · 1-9 direkt · q Ende
@@ -90,7 +90,7 @@ genügt (auch das macOS-System-Bash). Root-Rechte sind nicht nötig.
 ## Installation
 
 Einzeiler (macOS & Linux) — legt das Script nach `~/.local/bin`, die
-Konfiguration nach `~/.config/lauschbox`:
+Konfiguration (inkl. `blocklist.txt` und `web.html`) nach `~/.config/lauschbox`:
 
 ```bash
 curl -fsSL https://forbidden-fruits.github.io/lauschbox/install.sh | sh
@@ -146,7 +146,7 @@ Beenden. Das Dashboard oben zeigt den Konfigurationsstand.
 | 5 | 🚫 Sperrliste anzeigen | `blocklist.txt` scrollbar ansehen |
 | 6 | 📊 Statistik | Auswertung der laufenden Sitzung |
 | 7 | 📝 Logdatei Pfad | Ziel des Datei-Logs festlegen |
-| 8 | 🌐 Web-UI Port | Port der Web-UI setzen (Standard `8080`) |
+| 8 | 🌐 Web-UI Einstellungen | Port (Standard `8080`), Benutzername, Passwort und Pfad zur `web.html` setzen; Login leer = Web-UI offen, Pfad leer = Standard-Suche |
 | 9 | 👋 Ende | Beenden |
 
 ### Gerätefilter
@@ -181,7 +181,7 @@ die aktuelle Rate; darunter die Tastenleiste mit `●` (an) / `○` (aus) je Sch
 | `t` | Telegram an/aus (meldet nur Sperrlisten-Treffer, auch bei ausgeschalteter Sperrliste) |
 | `p` | Pause / zurück zur Live-Ansicht |
 | `l` | Datei-Log an/aus |
-| `w` | Web-UI an/aus (Schalter, Geräteauswahl und Live-Log im Browser; Port siehe `WEB_PORT`) — **ohne Authentifizierung, lauscht auf allen Interfaces** |
+| `w` | Web-UI an/aus (Schalter, Geräteauswahl und Live-Log im Browser; Port siehe `WEB_PORT`) — lauscht auf allen Interfaces, **ohne Login, solange `WEB_USER`/`WEB_PASS` nicht gesetzt sind** |
 | `c` | Puffer und Zähler leeren |
 | `x` / `q` | zurück zum Hauptmenü |
 | `↑`/`↓`, `PgUp`/`PgDn`, `Home`, Mausrad | scrollen |
@@ -287,7 +287,20 @@ auch vom Handy im selben Netz. Die Web-UI läuft nur, solange das DNS-Logging ak
 2. `w` drücken – die Statusleiste zeigt `w ●` und die Adresse
 3. Im Browser `http://<Rechnername>:8080` öffnen
 
-Der Port ist über Menü **[8]** oder `WEB_PORT` in der `lauschbox.env` änderbar (1024–65535).
+Port, Benutzername, Passwort und Pfad zur `web.html` sind über Menü **[8]** oder `WEB_PORT`, `WEB_USER`, `WEB_PASS` und `WEB_HTML` in der `lauschbox.env` änderbar (Port 1024–65535). Bleiben Benutzername oder Passwort leer, ist die Web-UI **offen**. Ein leerer Pfad bedeutet Standard-Suche (siehe unten).
+
+Die Seite selbst liegt in der Datei **`web.html`** (Pflichtdatei, wird vom Installer
+mitgeladen). Gesucht wird in dieser Reihenfolge: 1. `WEB_HTML` in der `lauschbox.env`,
+2. `./web.html` im aktuellen Verzeichnis, 3. `~/.config/lauschbox/web.html`. Ohne Datei
+lässt sich die Web-UI nicht einschalten. Die Datei wird bei jedem Seitenaufruf neu gelesen —
+Anpassungen brauchen nur ein Neuladen im Browser. Ihr JavaScript spricht die API
+`/api/state`, `/api/log` und `/api/set` an.
+
+Der Installer aktualisiert `~/.config/lauschbox/web.html` bei jedem Lauf. Eine abweichende
+vorhandene Datei wird vorher als `web_html_<Zeitstempel>.backup` daneben gesichert —
+eigene Anpassungen daraus bei Bedarf übernehmen. Wer eine eigene Seite dauerhaft nutzen will,
+legt sie außerhalb ab und setzt `WEB_HTML` (oder legt sie als `./web.html` ab); der Installer
+fasst diese Orte nicht an.
 
 <p align="center"><img src="docs/img/web-ui.svg" alt="Web-UI: Schalter, Geräteauswahl und Live-Log" width="720"></p>
 
@@ -303,8 +316,12 @@ Terminal und Browser sind synchron: Änderungen im Browser greifen sofort, Ände
 Terminal erscheinen dort nach spätestens 2 Sekunden. Telegram lässt sich im Browser nur
 schalten, wenn es konfiguriert ist.
 
-> ⚠️ Die Web-UI hat **keine Authentifizierung** und lauscht auf allen Interfaces –
-> nur im vertrauenswürdigen Heimnetz einschalten.
+> ⚠️ Die Web-UI lauscht auf allen Interfaces. **Ohne `WEB_USER` und `WEB_PASS` in der
+> `lauschbox.env` ist sie offen (keine Authentifizierung).** Sind beide gesetzt, verlangt
+> sie HTTP Basic Auth für Seite und API. Die Übertragung bleibt unverschlüsselt (HTTP),
+> Zugangsdaten und Log sind im Netz mitlesbar — nur im vertrauenswürdigen Heimnetz
+> einschalten. Nur eine der beiden Variablen (oder ein `:` im Benutzernamen) verhindert den Start.
+> Die `lauschbox.env` enthält das Passwort im Klartext: `chmod 600` setzen.
 
 ## Konfiguration
 
@@ -320,6 +337,7 @@ wurden, sonst in `~/.config/lauschbox/`.
 | `.telegram.env` | `TG_TOKEN`, `TG_CHAT_ID` | Menü [2] |
 | `.devices.env` | `DEVICE_FILTER` (MACs, kommagetrennt, oder `ALL`), `DEVICE_FILTER_NAMES` | Menü [3] |
 | `blocklist.txt` | Sperrliste | Installer / von Hand |
+| `web.html` | Seite der Web-UI (Pflicht für die Web-UI; Vorrang: `WEB_HTML` aus `lauschbox.env`) | Installer (überschreibt, sichert vorher) / von Hand |
 | `lauschbox.env` | Einstellungen (s. u.) | Installer / von Hand / Menü [7] (`LOG_FILE`) |
 | `dns.log` | Datei-Log | Taste `l` |
 
@@ -350,6 +368,11 @@ NOTIFY_COOLDOWN=30
 DEVICE_REFRESH_SECS=300
 # Port der Web-UI (Taste w im Logging), 1024-65535
 WEB_PORT=8080
+# Eigene Seite der Web-UI (absoluter Pfad); Vorrang vor ./web.html und ~/.config/lauschbox/web.html
+#WEB_HTML=/Users/dein-name/web.html
+# Basic Auth der Web-UI (nur aktiv, wenn beide gesetzt); sonst offen
+#WEB_USER=dein-name
+#WEB_PASS=dein-passwort
 # Ziel des Datei-Logs (Taste l)
 LOG_FILE=/Users/dein-name/.config/lauschbox/dns.log
 ```
@@ -363,6 +386,8 @@ LOG_FILE=/Users/dein-name/.config/lauschbox/dns.log
 | `NOTIFY_COOLDOWN` | `30` | Mindestabstand gleicher Telegram-Meldungen |
 | `DEVICE_REFRESH_SECS` | `300` | Intervall für die Auffrischung der Gerätenamen im Hintergrund |
 | `WEB_PORT` | `8080` | Port der Web-UI (1024–65535), änderbar über Menü **[8]** |
+| `WEB_HTML` | *(leer)* | Absoluter Pfad zur Web-UI-Seite, änderbar über Menü **[8]**; leer = Standard-Suche (`./web.html`, dann `~/.config/lauschbox/web.html`) |
+| `WEB_USER` / `WEB_PASS` | *(leer)* | Basic Auth der Web-UI, änderbar über Menü **[8]**. Greift nur, wenn **beide** gesetzt sind (Benutzername ohne `:`); sonst bleibt die Web-UI offen |
 | `LOG_FILE` | `~/.config/lauschbox/dns.log` | Pfad des Datei-Logs — **absoluter Pfad**, `~` und `$HOME` werden in der `.env` nicht aufgelöst |
 
 Farben abschalten: `--no-color` oder `NO_COLOR=1`.

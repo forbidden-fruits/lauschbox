@@ -179,7 +179,7 @@
         <article class="card spot">
           <div class="card-icon">🌐</div>
           <h3>Web-UI</h3>
-          <p>Taste <kbd>w</kbd> startet eine Weboberfläche (Port 8080): Schalter, Geräteauswahl und Live-Log im Browser, auch mobil. <strong>Ohne Login</strong> — nur im vertrauenswürdigen Heimnetz nutzen.</p>
+          <p>Taste <kbd>w</kbd> startet eine Weboberfläche (Port 8080): Schalter, Geräteauswahl und Live-Log im Browser, auch mobil. Optional mit <strong>Basic-Auth-Login</strong> (<code>WEB_USER</code>/<code>WEB_PASS</code>), sonst offen — nur im vertrauenswürdigen Heimnetz nutzen.</p>
         </article>
 
         <article class="card spot">
@@ -288,7 +288,7 @@ cd lauschbox
               <li><b>[3] Gerätefilter</b> — Geräte auswählen</li>
               <li><b>[4] DNS Logging</b> — los geht’s</li>
             </ol>
-            <p class="note">Weitere Punkte: <b>[5]</b> Sperrliste anzeigen · <b>[6]</b> Statistik · <b>[7]</b> Logdatei Pfad (Ziel des Datei-Logs) · <b>[8]</b> Web-UI Port · <b>[9]</b> Ende. Der aktuelle Log-Pfad steht im Kopf des Hauptmenüs.</p>
+            <p class="note">Weitere Punkte: <b>[5]</b> Sperrliste anzeigen · <b>[6]</b> Statistik · <b>[7]</b> Logdatei Pfad (Ziel des Datei-Logs) · <b>[8]</b> Web-UI Einstellungen (Port, Login, Seite) · <b>[9]</b> Ende. Der aktuelle Log-Pfad steht im Kopf des Hauptmenüs.</p>
             <p class="note">Direkt ins Log starten: <code>lauschbox --log</code></p>
           </div>
         </li>
@@ -310,7 +310,7 @@ cd lauschbox
             <div><kbd>t</kbd><span>Telegram an/aus <em>(nur Treffer, unabhängig von der Sperrliste)</em></span></div>
             <div><kbd>p</kbd><span>Pause / Live</span></div>
             <div><kbd>l</kbd><span>Datei-Log an/aus</span></div>
-            <div><kbd>w</kbd><span>Web-UI an/aus <em>(ohne Login!)</em></span></div>
+            <div><kbd>w</kbd><span>Web-UI an/aus <em>(Login optional)</em></span></div>
             <div><kbd>c</kbd><span>Puffer &amp; Zähler leeren</span></div>
             <div><kbd>x</kbd><span>zurück zum Menü</span></div>
             <div><kbd>↑</kbd><kbd>↓</kbd><span>zeilenweise scrollen</span></div>
@@ -373,8 +373,10 @@ cd lauschbox
             <li><kbd>w</kbd> drücken — die Statusleiste zeigt <code>w ●</code> und die Adresse</li>
             <li>Im Browser <code>http://&lt;Rechnername&gt;:8080</code> öffnen</li>
           </ol>
-          <p class="note">Port ändern: Menü <b>[8]</b> oder <code>WEB_PORT</code> in der <code>lauschbox.env</code>. Die Web-UI läuft nur, solange das Logging aktiv ist.</p>
-          <p class="note">⚠️ <strong>Keine Anmeldung, lauscht auf allen Interfaces</strong> — nur im vertrauenswürdigen Heimnetz einschalten.</p>
+          <p class="note">Port und Login ändern: Menü <b>[8]</b> oder <code>WEB_PORT</code>, <code>WEB_USER</code>, <code>WEB_PASS</code> in der <code>lauschbox.env</code>. Die Web-UI läuft nur, solange das Logging aktiv ist.</p>
+          <p class="note">Die Seite liegt in <code>web.html</code> (Pflichtdatei, vom Installer geladen). Suchreihenfolge: <code>WEB_HTML</code> in der <code>lauschbox.env</code> (auch über Menü <b>[8]</b>), dann <code>./web.html</code>, dann <code>~/.config/lauschbox/web.html</code>.</p>
+          <p class="note">Login: <code>WEB_USER</code> und <code>WEB_PASS</code> aktivieren HTTP Basic Auth (nur wenn beide gesetzt, sonst offen) — auch über Menü <b>[8]</b> setzbar.</p>
+          <p class="note">⚠️ <strong>Ohne Login offen, lauscht auf allen Interfaces, HTTP unverschlüsselt</strong> — nur im vertrauenswürdigen Heimnetz einschalten.</p>
         </div>
       </div>
     </section>
@@ -397,6 +399,7 @@ cd lauschbox
               <tr><td><code>.telegram.env</code></td><td><code>TG_TOKEN</code>, <code>TG_CHAT_ID</code></td></tr>
               <tr><td><code>.devices.env</code></td><td><code>DEVICE_FILTER</code> (MACs oder <code>ALL</code>), <code>DEVICE_FILTER_NAMES</code></td></tr>
               <tr><td><code>blocklist.txt</code></td><td>Sperrliste</td></tr>
+              <tr><td><code>web.html</code></td><td>Seite der Web-UI (Pflicht für die Web-UI; Vorrang: <code>WEB_HTML</code>)</td></tr>
               <tr><td><code>lauschbox.env</code></td><td>Einstellungen (rechts) · <code>LOG_FILE</code> auch über Menü <b>[7]</b></td></tr>
               <tr><td><code>dns.log</code></td><td>Datei-Log (Taste <kbd>l</kbd>)</td></tr>
             </tbody>
@@ -428,6 +431,11 @@ NOTIFY_COOLDOWN=30
 DEVICE_REFRESH_SECS=300
 <span class="c-dim"># Port der Web-UI (Taste w), 1024-65535 — auch über Menü [8] setzbar</span>
 WEB_PORT=8080
+<span class="c-dim"># Eigene Seite der Web-UI (absoluter Pfad); Vorrang vor ./web.html und ~/.config/lauschbox/web.html</span>
+<span class="c-dim">#WEB_HTML=/Users/du/web.html</span>
+<span class="c-dim"># Basic Auth der Web-UI (nur aktiv, wenn beide gesetzt); sonst offen</span>
+<span class="c-dim">#WEB_USER=du</span>
+<span class="c-dim">#WEB_PASS=dein-passwort</span>
 <span class="c-dim"># Datei-Log (absoluter Pfad) — auch über Menü [7] "Logdatei Pfad" setzbar</span>
 LOG_FILE=/Users/du/.config/lauschbox/dns.log</pre>
           <table class="tbl">
@@ -440,6 +448,8 @@ LOG_FILE=/Users/du/.config/lauschbox/dns.log</pre>
               <tr><td><code>NOTIFY_COOLDOWN</code></td><td>30 <span class="dim-inline">(0 = aus)</span></td></tr>
               <tr><td><code>DEVICE_REFRESH_SECS</code></td><td>300 <span class="dim-inline">(0 = aus)</span></td></tr>
               <tr><td><code>WEB_PORT</code></td><td>8080</td></tr>
+              <tr><td><code>WEB_HTML</code></td><td><span class="dim-inline">(leer)</span></td></tr>
+              <tr><td><code>WEB_USER</code> / <code>WEB_PASS</code></td><td><span class="dim-inline">(leer = Web-UI offen)</span></td></tr>
               <tr><td><code>LOG_FILE</code></td><td>~/.config/lauschbox/dns.log</td></tr>
             </tbody>
           </table>

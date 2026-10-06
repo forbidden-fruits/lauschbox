@@ -66,6 +66,8 @@ ENV_TG="$(conf_path .telegram.env)"
 ENV_DEV="$(conf_path .devices.env)"
 ENV_MAIN="$(conf_path lauschbox.env)"
 BLOCKLIST_FILE="$(conf_path blocklist.txt)"
+WEB_HTML=""               # lauschbox.env: eigener Pfad zur Web-UI-Seite (Prio 1)
+WEB_USER=""; WEB_PASS=""  # lauschbox.env: Basic Auth der Web-UI; nur aktiv, wenn beide gesetzt
 
 # Einstellungen (lauschbox.env, alles optional)
 LOG_MAX_LINES=1000
@@ -102,11 +104,19 @@ load_env() {  # load_env DATEI VAR...
   return 0
 }
 load_env "$ENV_MAIN" LOG_MAX_LINES BLOCKLIST_MAX_LINES CAPTURE_IFACE DEDUPE_SECS \
-  NOTIFY_COOLDOWN DEVICE_REFRESH_SECS LOG_FILE WEB_PORT
+  NOTIFY_COOLDOWN DEVICE_REFRESH_SECS LOG_FILE WEB_PORT WEB_HTML WEB_USER WEB_PASS
 _posint() { [[ ${!1} =~ ^[0-9]+$ ]] || printf -v "$1" '%s' "$2"; }
 _posint LOG_MAX_LINES 1000; _posint BLOCKLIST_MAX_LINES 1000; _posint DEDUPE_SECS 2
 _posint NOTIFY_COOLDOWN 30; _posint DEVICE_REFRESH_SECS 300
 _posint WEB_PORT 8080; ((WEB_PORT >= 1024 && WEB_PORT <= 65535)) || WEB_PORT=8080
+web_html_path() {  # → R_LINE: Prio 1 WEB_HTML (lauschbox.env), 2 $PWD/web.html, 3 ~/.config/lauschbox/web.html
+  R_LINE=""
+  if [[ -n $WEB_HTML && -f $WEB_HTML && -r $WEB_HTML ]]; then R_LINE=$WEB_HTML
+  elif [[ -f $PWD/web.html && -r $PWD/web.html ]]; then R_LINE="$PWD/web.html"
+  elif [[ -f $CONFIG_DIR/web.html && -r $CONFIG_DIR/web.html ]]; then R_LINE="$CONFIG_DIR/web.html"
+  fi
+  [[ -n $R_LINE ]]
+}
 ((LOG_MAX_LINES > 0)) || LOG_MAX_LINES=1000
 ((BLOCKLIST_MAX_LINES > 0)) || BLOCKLIST_MAX_LINES=1000
 [[ -n $LOG_FILE ]] || LOG_FILE="$LOG_FILE_DEFAULT"
@@ -139,7 +149,7 @@ FB_IP=""; FB_USER=""; FB_PASS=""
 TG_TOKEN=""; TG_CHAT_ID=""
 DEVICE_FILTER=""; DEVICE_FILTER_NAMES=""
 FILTER_ON=1; BLOCK_ON=0; TG_ON=0; FILE_ON=0; PAUSED=0
-WEB_ON=0; WEB_PID=""; WEB_SEQ=0
+WEB_ON=0; WEB_PID=""; WEB_SEQ=0; WEB_URL=""
 EVENT=""
 CURL_PID=""; TSHARK_PID=""; KEY_PID=""; TICK_PID=""; DEVREF_PID=""
 FIFO_PCAP=""; FIFO_OUT=""
@@ -700,14 +710,22 @@ draw_bar() {  # Pill-Tastenleiste in der letzten Zeile
 }
 
 draw_rule() {  # Trennlinie mit Filter-/Sperrlisten-Chip
-  local chip
+  local chip url="" max=$((COLS - 8))
   if [[ $FILTER_ON == 1 ]]; then chip="📱 ${DEVICE_FILTER_NAMES:-Alle Netzwerkgeräte}"
   else chip="📱 alle Geräte (Filter aus)"; fi
   [[ $BLOCK_ON == 1 ]] && chip+="  ·  🚫 nur Sperrliste ($BL_COUNT)"
-  ((WEB_ON)) && chip+="  ·  🌐 :$WEB_PORT"
   chip+="  ·  $CAPTURE_IFACE"
-  local max=$((COLS - 8))
-  ((${#chip} > max)) && chip="${chip:0:$((max - 1))}…"
+  if ((WEB_ON)); then
+    url="🌐 $WEB_URL"  # Link wird nie gekürzt, damit er klickbar bleibt
+    max=$((max - ${#url} - 5))
+    if ((max < 12)); then chip=$url; max=${#url}
+    else
+      ((${#chip} > max)) && chip="${chip:0:$((max - 1))}…"
+      chip+="  ·  $url"
+    fi
+  else
+    ((${#chip} > max)) && chip="${chip:0:$((max - 1))}…"
+  fi
   printf '\033[%d;1H\033[2K %s── %s%s%s ' "$((ROWS - 2))" "$C_OVERLAY" "$C_SKY" "$chip" "$C_OVERLAY"
   rep "─" $((COLS - ${#chip} - 5))
   printf '%s' "$C_RESET"
@@ -980,11 +998,16 @@ clear_buffers() {
 # Befehle als "W;KEY;VAL"-Zeilen ins Event-FIFO (fd 3) — ui_loop führt sie wie Tasten aus.
 WEB_STATE="$TMPD/web.state"; WEB_LOG="$TMPD/web.log"; WEB_DEV="$TMPD/web.devices"
 read -r -d '' PY_WEB <<'PY'
-import sys, os, json, re, threading
+import sys, os, json, re, threading, base64, hmac
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
-port, tmpd, fifo = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+port, tmpd, fifo, htmlpath = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+AUTH = None
+if os.environ.get("LB_WEB_USER") and os.environ.get("LB_WEB_PASS"):
+    AUTH = base64.b64encode((os.environ["LB_WEB_USER"] + ":" + os.environ["LB_WEB_PASS"]).encode()).decode()
+os.environ.pop("LB_WEB_USER", None)
+os.environ.pop("LB_WEB_PASS", None)
 MAC = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
 BOOL_KEYS = {"filter": "filter_on", "block": "block_on", "tg": "tg_on", "pause": "paused", "file": "file_on"}
 lock = threading.Lock()
@@ -1083,10 +1106,28 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def authed(self):
+        if AUTH is None:
+            return True
+        h = self.headers.get("Authorization", "")
+        if h.startswith("Basic ") and hmac.compare_digest(h[6:].strip().encode(), AUTH.encode()):
+            return True
+        body = b"Anmeldung erforderlich"
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="lauschbox", charset="UTF-8"')
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+        return False
+
     def do_GET(self):
+        if not self.authed():
+            return
         u = urlparse(self.path)
         if u.path == "/":
-            self.reply(200, PAGE, "text/html; charset=utf-8")
+            self.reply(*page())
         elif u.path == "/api/state":
             self.reply(200, state())
         elif u.path == "/api/log":
@@ -1099,6 +1140,8 @@ class H(BaseHTTPRequestHandler):
             self.reply(404, {"error": "nicht gefunden"})
 
     def do_POST(self):
+        if not self.authed():
+            return
         if urlparse(self.path).path != "/api/set":
             return self.reply(404, {"error": "nicht gefunden"})
         try:
@@ -1118,103 +1161,13 @@ class H(BaseHTTPRequestHandler):
             code, payload = 503, {"error": "lauschbox nicht erreichbar"}
         self.reply(code, payload)
 
-PAGE = r"""<!doctype html>
-<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>lauschbox</title>
-<style>
-:root{--base:#24273a;--mantle:#1e2030;--surf:#363a4f;--text:#cad3f5;--sub:#6e738d;--mauve:#c6a0f6;--green:#a6da95;--red:#ed8796;--sky:#91d7e3;--blue:#8aadf4}
-*{box-sizing:border-box}body{margin:0;background:var(--base);color:var(--text);font:14px/1.4 ui-monospace,Menlo,monospace}
-header{padding:12px 16px;background:var(--mantle);display:flex;gap:16px;align-items:baseline;flex-wrap:wrap}
-h1{margin:0;color:var(--mauve);font-size:18px}#cnt{color:var(--sub)}
-h1 a{color:inherit;text-decoration:none}h1 a:hover{text-decoration:underline}
-.gh{display:inline-flex;align-items:center;gap:6px;color:var(--text);text-decoration:none;border:1px solid var(--surf);border-radius:8px;padding:2px 10px;font-size:13px}.gh:hover{border-color:var(--mauve)}
-main{padding:16px;display:grid;grid-template-columns:minmax(0,1fr);gap:16px;max-width:1100px;margin:auto}
-section{min-width:0}
-section{background:var(--mantle);border-radius:8px;padding:12px}
-h2{margin:0 0 8px;font-size:13px;color:var(--sub);text-transform:uppercase;letter-spacing:.05em}
-button{background:var(--surf);color:var(--text);border:0;border-radius:6px;padding:6px 12px;font:inherit;cursor:pointer;margin:2px}
-button:hover{background:#494d64}button:disabled{opacity:.4;cursor:not-allowed}
-button.on{outline:1px solid var(--green)}button.on::before{content:"● ";color:var(--green)}
-button:not(.on)::before{content:"○ ";color:var(--red)}button.plain::before{content:""}
-#devs{max-height:260px;overflow:auto;margin:8px 0}
-#devs label{display:flex;gap:8px;padding:2px 4px}#devs label:hover{background:var(--surf)}
-.i{color:var(--sub)}.act{color:var(--sky)}.ip{color:var(--blue)}
-#log{max-height:55vh;overflow:auto}table{border-collapse:collapse;width:100%}
-td{padding:1px 8px 1px 0;white-space:nowrap}tr.hit td{color:var(--red);font-weight:bold}
-td:nth-child(1){color:var(--sub)}td:nth-child(2){color:var(--sky)}td:nth-child(3){color:var(--blue)}tr.hit td{color:var(--red)}
-#err{color:var(--red)}
-#devs label{flex-wrap:wrap;align-items:baseline}
-summary{cursor:pointer;list-style:none}summary::-webkit-details-marker{display:none}
-summary h2{display:inline;margin:0}summary::before{content:"▾ ";color:var(--mauve);font-size:20px;vertical-align:middle}
-details:not([open])>summary::before{content:"▸ "}
-@media(max-width:600px){
-body{font-size:13px}header{padding:10px 12px}main{padding:10px;gap:10px}
-button{padding:8px 12px}
-#log{max-height:60vh}table,tbody{display:block}
-tr{display:flex;flex-wrap:wrap;gap:0 8px;padding:3px 0;border-bottom:1px solid var(--surf)}
-td{padding:0;white-space:normal}td:nth-child(4){flex-basis:100%;word-break:break-all}
-}
-</style></head><body>
-<header><h1><a href="https://forbidden-fruits.github.io/lauschbox/" target="_blank" rel="noopener">lauschbox</a></h1><a class="gh" href="https://github.com/forbidden-fruits/lauschbox" target="_blank" rel="noopener"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>GitHub</a><span id="cnt"></span><span id="err"></span></header>
-<main>
-<section><h2>Schalter</h2><div id="sw"></div></section>
-<section><details id="dsec"><summary><h2>Gerätefilter <span id="fn" class="i"></span></h2></summary>
-<div id="devs"></div>
-<button id="save" class="plain">Speichern</button><button id="all" class="plain">Alle</button><button id="ref" class="plain">Aktualisieren</button></details></section>
-<section><h2>Live-Log</h2><div id="log"><table><tbody id="tb"></tbody></table></div></section>
-</main>
-<script>
-const $=s=>document.querySelector(s);
-const SW=[["filter","filter_on","Gerätefilter"],["block","block_on","Sperrliste"],["tg","tg_on","Telegram"],["pause","paused","Pause"],["file","file_on","Datei-Log"]];
-let st=null,dirty=false,sel=new Set(),since=0,devSig="";
-function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
-async function post(key,value){
-  try{const r=await fetch("/api/set",{method:"POST",body:JSON.stringify({key,value})});
-    $("#err").textContent=r.ok?"":"Fehler: "+(await r.json()).error;}
-  catch(e){$("#err").textContent="Server nicht erreichbar"}
-}
-function renderSw(){
-  const box=$("#sw");box.textContent="";
-  SW.forEach(([k,f,l])=>{
-    const b=el("button",st[f]?"on":"",l);
-    if(k==="tg"&&!st.tg_conf){b.disabled=true;b.title="Telegram nicht konfiguriert"}
-    b.onclick=async()=>{await post(k,!st[f]);setTimeout(poll,300)};
-    box.appendChild(b)});
-  const c=el("button","plain","Puffer leeren");
-  c.onclick=async()=>{await post("clear",null);$("#tb").textContent="";setTimeout(poll,300)};
-  box.appendChild(c);
-}
-function renderDevs(){
-  const sig=JSON.stringify([st.devices,st.filter_macs]);
-  if(dirty||sig===devSig)return;
-  devSig=sig;const box=$("#devs");box.textContent="";
-  st.devices.forEach(d=>{
-    const l=el("label"),cb=el("input");cb.type="checkbox";cb.checked=sel.has(d.mac);
-    cb.onchange=()=>{dirty=true;cb.checked?sel.add(d.mac):sel.delete(d.mac)};
-    l.append(cb,el("span",d.active?"act":"i",d.name||"(ohne Namen)"),el("span","ip",d.ip||"-"),el("span","i",d.mac+(d.guest?" · Gast":"")));
-    box.appendChild(l)});
-}
-async function poll(){
-  try{st=await (await fetch("/api/state")).json();$("#err").textContent=""}catch(e){$("#err").textContent="Server nicht erreichbar";return}
-  if(!dirty){sel=new Set(st.filter_macs)}
-  $("#cnt").textContent="Σ "+st.total+" · 🚫 "+st.hits+(st.reconnect?" · ↻ Reconnect":"");
-  $("#fn").textContent="– aktiv: "+(st.filter_on?st.filter_names||"Alle Netzwerkgeräte":"Filter aus");
-  renderSw();renderDevs();
-}
-async function tail(){
-  try{const j=await (await fetch("/api/log?since="+since)).json();
-    since=j.last;const tb=$("#tb");
-    j.rows.forEach(r=>{const tr=el("tr",r[4]==="1"?"hit":"");
-      r.slice(0,4).forEach(x=>tr.appendChild(el("td","",x)));tb.insertBefore(tr,tb.firstChild)});
-    while(tb.rows.length>500)tb.deleteRow(-1);
-  }catch(e){}
-}
-$("#ref").onclick=async()=>{const b=$("#ref");b.disabled=true;b.textContent="Lade …";await post("refresh",null);
-  setTimeout(poll,3000);setTimeout(()=>{poll();b.disabled=false;b.textContent="Aktualisieren"},6000)};
-$("#save").onclick=async()=>{await post("devices",[...sel]);dirty=false;devSig="";setTimeout(poll,300)};
-$("#all").onclick=async()=>{await post("devices",[]);dirty=false;sel=new Set();devSig="";setTimeout(poll,300)};
-poll();tail();setInterval(poll,2000);setInterval(tail,1000);
-</script></body></html>"""
+def page():
+    """web.html bei jedem Aufruf frisch lesen → (status, body, ctype)"""
+    try:
+        with open(htmlpath, "rb") as f:
+            return 200, f.read(), "text/html; charset=utf-8"
+    except OSError:
+        return 500, "web.html nicht lesbar: " + htmlpath, "text/plain; charset=utf-8"
 
 ThreadingHTTPServer(("0.0.0.0", port), H).serve_forever()
 PY
@@ -1276,10 +1229,12 @@ web_cmd() {  # web_cmd KEY VAL — explizite Werte (idempotent)
   web_state_write
 }
 
-web_start() {
+web_start() {  # Rückgabe 1: keine web.html; 2: Basic Auth unvollständig (nur WEB_USER oder nur WEB_PASS)
+  web_html_path || return 1
+  [[ -z $WEB_USER && -z $WEB_PASS ]] || [[ -n $WEB_USER && -n $WEB_PASS && $WEB_USER != *:* ]] || return 2
   web_state_write
   : > "$WEB_LOG"
-  python3 -c "$PY_WEB" "$WEB_PORT" "$TMPD" "$FIFO_OUT" >/dev/null 2>&1 &
+  LB_WEB_USER="$WEB_USER" LB_WEB_PASS="$WEB_PASS" python3 -c "$PY_WEB" "$WEB_PORT" "$TMPD" "$FIFO_OUT" "$R_LINE" >/dev/null 2>&1 &
   WEB_PID=$!
 }
 
@@ -1292,7 +1247,12 @@ toggle_web() {
   if ((WEB_ON)); then
     WEB_ON=0; web_stop; msg "Web-UI aus"
   else
-    WEB_ON=1; web_start; msg "Web-UI an → http://$(hostname):$WEB_PORT"
+    web_start; case $? in
+      0) WEB_ON=1; WEB_URL="http://$(hostname):$WEB_PORT"
+         if [[ -n $WEB_USER ]]; then msg "Web-UI an (Login aktiv)"; else msg "Web-UI an"; fi ;;
+      2) msg "⚠ Web-UI-Login: WEB_USER und WEB_PASS beide setzen (Benutzer ohne ':') in lauschbox.env" ;;
+      *) msg "⚠ web.html fehlt (WEB_HTML in lauschbox.env, ./web.html oder $CONFIG_DIR/web.html)" ;;
+    esac
   fi
   draw_rule; draw_bar
 }
@@ -1656,30 +1616,62 @@ ui_logpath() {
   return 0
 }
 
-# ---------- Menüpunkt 8: Web-UI Port ----------
-ui_webport() {
-  local p
+# ---------- Menüpunkt 8: Web-UI Einstellungen ----------
+ui_websettings() {
+  local p u pw h
   screen
-  title "🌐 Web-UI Port"
-  info "ℹ️  Aktuell:  $WEB_PORT"
-  info "   Standard:  8080 (erlaubt: 1024-65535)"
+  title "🌐 Web-UI Einstellungen"
+  info "ℹ️  Port:      $WEB_PORT  (Standard 8080, erlaubt: 1024-65535)"
+  if [[ -n $WEB_USER && -n $WEB_PASS ]]; then info "   Login:     Benutzer „${WEB_USER}“, Passwort gesetzt"
+  else info "   Login:     keiner — Web-UI ist offen"; fi
+  if [[ -n $WEB_HTML ]]; then info "   Seite:     $WEB_HTML  (eigener Pfad)"
+  elif web_html_path; then info "   Seite:     $R_LINE  (Standard-Suche)"
+  else info "   Seite:     keine web.html gefunden (./web.html oder $CONFIG_DIR/web.html)"; fi
   info "   Web-UI einschalten: Taste w im Logging. Gespeichert in $ENV_MAIN."
   echo
-  ask p "${C_TEXT}Neuer Port — leer = abbrechen${C_RESET}"
-  if [[ -z $p ]]; then return 0; fi
-  if [[ ! $p =~ ^[0-9]+$ ]] || ((10#$p < 1024 || 10#$p > 65535)); then
-    echo; err "✖ Ungültiger Port (1024-65535)."; anykey; return 1
+  ask p "${C_TEXT}Neuer Port — leer = unverändert${C_RESET}"
+  if [[ -n $p ]]; then
+    if [[ ! $p =~ ^[0-9]+$ ]] || ((10#$p < 1024 || 10#$p > 65535)); then
+      echo; err "✖ Ungültiger Port (1024-65535)."; anykey; return 1
+    fi
+    p=$((10#$p))
   fi
-  p=$((10#$p))
-  set_env_key "$ENV_MAIN" WEB_PORT "$p" || { err "✖ Konnte $ENV_MAIN nicht schreiben"; anykey; return 1; }
-  WEB_PORT=$p
-  echo; ok "✔ Gespeichert: $WEB_PORT"
+  echo
+  ask u "${C_TEXT}Benutzername — leer = kein Login (Web-UI offen)${C_RESET}"
+  pw=""
+  if [[ $u == *:* ]]; then
+    echo; err "✖ Benutzername darf kein ':' enthalten."; anykey; return 1
+  fi
+  if [[ -n $u ]]; then
+    echo
+    ask pw "${C_TEXT}Passwort — leer = kein Login (Web-UI offen)${C_RESET}" secret
+  fi
+  echo
+  ask h "${C_TEXT}Pfad zur web.html (absolut, ~ erlaubt) — leer = Standard (./web.html, dann $CONFIG_DIR/web.html)${C_RESET}"
+  [[ $h == "~/"* ]] && h="$HOME/${h#\~/}"
+  if [[ -n $h ]]; then
+    if [[ $h != /* ]]; then echo; err "✖ Bitte einen absoluten Pfad angeben."; anykey; return 1; fi
+    if [[ ! -f $h || ! -r $h ]]; then echo; err "✖ $h ist keine lesbare Datei."; anykey; return 1; fi
+  fi
+  [[ -n $p ]] && { set_env_key "$ENV_MAIN" WEB_PORT "$p" || { err "✖ Konnte $ENV_MAIN nicht schreiben"; anykey; return 1; }; WEB_PORT=$p; }
+  if [[ -z $u || -z $pw ]]; then u=""; pw=""; fi
+  set_env_key "$ENV_MAIN" WEB_HTML "$h" || { err "✖ Konnte $ENV_MAIN nicht schreiben"; anykey; return 1; }
+  WEB_HTML=$h
+  set_env_key "$ENV_MAIN" WEB_USER "$u" && set_env_key "$ENV_MAIN" WEB_PASS "$pw" \
+    || { err "✖ Konnte $ENV_MAIN nicht schreiben"; anykey; return 1; }
+  WEB_USER=$u; WEB_PASS=$pw
+  echo; ok "✔ Gespeichert: Port $WEB_PORT"
+  if [[ -n $WEB_USER ]]; then ok "✔ Login aktiv für Benutzer „${WEB_USER}“"
+  else warn "⚠ Kein Login gesetzt — die Web-UI ist offen (jeder im Netz hat Zugriff)."; fi
+  if [[ -n $WEB_HTML ]]; then ok "✔ Eigene Seite: $WEB_HTML"
+  else warn "ℹ Kein Pfad gesetzt — Standard: ./web.html, dann $CONFIG_DIR/web.html (WEB_HTML bleibt in der env auskommentiert/leer)."; fi
+  warn "  $ENV_MAIN enthält das Passwort im Klartext (Rechte 600)."
   anykey
   return 0
 }
 
 # ---------- Hauptmenü ----------
-MENU_LABELS=("🔌  Verbindung Fritzbox" "✈️   Verbindung Telegram" "📱  Gerätefilter" "📡  DNS Logging" "🚫  Sperrliste anzeigen" "📊  Statistik" "📝  Logdatei Pfad" "🌐  Web-UI Port" "👋  Ende")
+MENU_LABELS=("🔌  Verbindung Fritzbox" "✈️   Verbindung Telegram" "📱  Gerätefilter" "📡  DNS Logging" "🚫  Sperrliste anzeigen" "📊  Statistik" "📝  Logdatei Pfad" "🌐  Web-UI Einstellungen" "👋  Ende")
 
 menu_dashboard() {  # Statuszeilen
   local fbs tgs fs bls lfs
@@ -1720,7 +1712,7 @@ menu_run() {
     4) ui_blocklist ;;
     5) ui_stats ;;
     6) ui_logpath ;;
-    7) ui_webport ;;
+    7) ui_websettings ;;
     8) exit 0 ;;
   esac
   return 0

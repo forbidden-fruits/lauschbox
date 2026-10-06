@@ -18,7 +18,7 @@ echo "→ Lade lauschbox ($BASE/lauschbox)"
 curl -fsSL "$BASE/lauschbox" -o "$DEST"
 chmod +x "$DEST"
 
-# Konfigurationsordner + Sperrliste + Einstellungen
+# Konfigurationsordner + Sperrliste + Web-UI-Seite + Einstellungen
 mkdir -p "$CONFIG_DIR"
 if [ -f "$CONFIG_DIR/blocklist.txt" ]; then
   echo "→ blocklist.txt existiert bereits in $CONFIG_DIR — wird nicht überschrieben"
@@ -26,6 +26,16 @@ else
   echo "→ Lade blocklist.txt nach $CONFIG_DIR"
   curl -fsSL "$BASE/blocklist.txt" -o "$CONFIG_DIR/blocklist.txt"
 fi
+
+# web.html wird bei jedem Install aktualisiert; eine abweichende vorhandene Datei wird gesichert
+echo "→ Lade web.html nach $CONFIG_DIR"
+curl -fsSL "$BASE/web.html" -o "$CONFIG_DIR/web.html.new"
+if [ -f "$CONFIG_DIR/web.html" ] && ! cmp -s "$CONFIG_DIR/web.html" "$CONFIG_DIR/web.html.new"; then
+  BACKUP="$CONFIG_DIR/web_html_$(date +%Y%m%d-%H%M%S).backup"
+  cp "$CONFIG_DIR/web.html" "$BACKUP"
+  echo "→ Bisherige web.html gesichert: $BACKUP"
+fi
+mv -f "$CONFIG_DIR/web.html.new" "$CONFIG_DIR/web.html"
 
 if [ -f "$CONFIG_DIR/lauschbox.env" ]; then
   echo "→ lauschbox.env existiert bereits in $CONFIG_DIR — wird nicht überschrieben"
@@ -46,10 +56,17 @@ NOTIFY_COOLDOWN=30
 DEVICE_REFRESH_SECS=300
 # Port der Web-UI (Taste w im Logging), 1024-65535
 WEB_PORT=8080
+# Eigene Seite der Web-UI (absoluter Pfad); Vorrang vor ./web.html und ~/.config/lauschbox/web.html
+#WEB_HTML=/Users/dein-name/web.html
+# Basic Auth der Web-UI: nur aktiv, wenn BEIDE gesetzt sind (Benutzer ohne ':'); sonst bleibt die Web-UI offen
+# Achtung: Klartext in dieser Datei, Übertragung unverschlüsselt (HTTP) — Datei mit chmod 600 schützen
+#WEB_USER=dein-name
+#WEB_PASS=dein-passwort
 # Ziel des Datei-Logs (Taste l) — absoluter Pfad, ~ und $HOME werden nicht aufgelöst
 # Standard: ~/.config/lauschbox/dns.log
 #LOG_FILE=/Users/dein-name/.config/lauschbox/dns.log
 EOF
+  chmod 600 "$CONFIG_DIR/lauschbox.env"
   echo "→ lauschbox.env mit Standard-Limits nach $CONFIG_DIR geschrieben"
 fi
 
@@ -84,7 +101,7 @@ case ":$PATH:" in
 esac
 
 echo "✅ Installiert: $DEST"
-echo "   Konfiguration, blocklist.txt & lauschbox.env: $CONFIG_DIR"
+echo "   Konfiguration, blocklist.txt, web.html & lauschbox.env: $CONFIG_DIR"
 echo "   (lauschbox sucht Konfigdateien zuerst im aktuellen Verzeichnis, dann in $CONFIG_DIR)"
 echo "   Puffer-Limits einstellen in: $CONFIG_DIR/lauschbox.env"
 echo "   Start mit:  lauschbox"
